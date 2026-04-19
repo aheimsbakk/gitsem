@@ -12,6 +12,7 @@ gitsem v1.3.4        → tags v1, v1.3, v1.3.4  all pointing to HEAD
 gitsem 1.3           → tags  1,  1.3           all pointing to HEAD
 gitsem --push 1.3.4  → same as above, then syncs those tags to origin
 gitsem --push        → syncs ALL local managed tags to origin
+gitsem --repair      → reconciles ALL floating tags from the existing exact-tag inventory
 ```
 
 ## Requirements
@@ -53,6 +54,7 @@ uv run gitsem 1.3.4
 ```
 gitsem [--push] [--force] [--migrate] [--dry-run] [-q] [--porcelain] [-v] <version>
 gitsem --push [--force] [--dry-run] [-q] [--porcelain]
+gitsem --repair [--push] [--dry-run] [-q] [--porcelain] [-v]
 gitsem --help
 gitsem --version
 ```
@@ -65,6 +67,7 @@ gitsem --version
 | `--push` | | Synchronize managed tags to `origin`. When used **without a version**, syncs every local managed tag to the remote (see [Sync all](#sync-all)). When used **with a version**, syncs only the managed tags for that version |
 | `--force` | | Allow overwriting conflicting exact release tags on the remote (requires `--push`) |
 | `--migrate` | | Migrate all managed release tags to the prefix style of the requested version |
+| `--repair` | | Reconcile floating tags across the whole repository from the existing exact-tag inventory — no HEAD tagging (see [Repair](#repair)) |
 | `--dry-run` | | Validate and plan all operations without making any mutations |
 | `--quiet` | `-q` | Suppress per-tag output; emit only the final summary line |
 | `--porcelain` | | Emit machine-readable output suitable for scripting (see below) |
@@ -111,6 +114,30 @@ gitsem --dry-run --push
 
 # Repair a conflicting exact remote tag and sync everything
 gitsem --push --force
+```
+
+### Repair
+
+`gitsem --repair` reconciles floating tags across the **entire repository** by deriving the correct target commit for each floating tag from the existing exact-tag inventory. It does not tag HEAD or require a version argument.
+
+What `--repair` does for each floating tag:
+
+- **`MAJOR`** — points to the commit of the highest `MAJOR.x` or `MAJOR.x.y` release in that major line
+- **`MAJOR.MINOR`** — points to the commit of the highest `MAJOR.MINOR.y` patch release; only created when at least one `MAJOR.MINOR.PATCH` exact tag exists
+- If a floating tag is missing it is **created**; if it points to the wrong commit it is **moved**; if it is already correct it is **skipped**
+- Exact release tags (`MAJOR.MINOR.PATCH` and bare `MAJOR.MINOR`) are **never touched**
+
+`--repair` is mutually exclusive with `<version>`, `--migrate`, and `--force`. It can be combined with `--push`, `--dry-run`, `-q`, `--porcelain`, and `-v`.
+
+```sh
+# Reconcile all floating tags locally
+gitsem --repair
+
+# Preview what would change without mutating anything
+gitsem --repair --dry-run
+
+# Reconcile locally and push the corrected floating tags to origin
+gitsem --repair --push
 ```
 
 ### Dry-run mode
