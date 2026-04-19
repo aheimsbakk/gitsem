@@ -57,8 +57,8 @@ def health_check() -> str:
     result = _run(["symbolic-ref", "--quiet", "HEAD"])
     if result.returncode != 0:
         raise UnhealthyRepositoryError(
-            "Repository is in detached HEAD state. "
-            "Check out a branch before running gitsem."
+            "Repository is in detached HEAD state.",
+            hint="check out a branch before running gitsem",
         )
 
     return head_commit

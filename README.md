@@ -7,9 +7,9 @@ Docker-style floating semantic-version tags for Git repositories.
 `gitsem` applies **moving channel tags** to your current Git commit, mirroring how Docker manages `latest`, `1`, and `1.3` alongside `1.3.4`. A single release command keeps all related tags aligned on the same commit, moving floating tags automatically and pinning exact release tags.
 
 ```
-gitsem 1.3.4       → tags  1,  1.3,  1.3.4  all pointing to HEAD
-gitsem v1.3.4      → tags v1, v1.3, v1.3.4  all pointing to HEAD
-gitsem 1.3         → tags  1,  1.3           all pointing to HEAD
+gitsem 1.3.4         → tags  1,  1.3,  1.3.4  all pointing to HEAD
+gitsem v1.3.4        → tags v1, v1.3, v1.3.4  all pointing to HEAD
+gitsem 1.3           → tags  1,  1.3           all pointing to HEAD
 gitsem --push 1.3.4  → same as above, then syncs to origin
 ```
 
@@ -50,7 +50,7 @@ uv run gitsem 1.3.4
 ## Usage
 
 ```
-gitsem [--push] [--force] [--switch] [--verbose] <version>
+gitsem [--push] [--force] [--switch] [--dry-run] [-q] [--porcelain] [-v] <version>
 gitsem --help
 gitsem --version
 ```
@@ -63,7 +63,10 @@ gitsem --version
 | `--push` | Synchronize managed tags to `origin` after local tagging |
 | `--force` | Allow overwriting conflicting exact release tags on the remote (requires `--push`) |
 | `--switch` | Migrate all managed release tags to the prefix style of the requested version |
-| `-v`, `--verbose` | Emit additional operational detail |
+| `--dry-run` | Validate and plan all operations without making any mutations |
+| `-q`, `--quiet` | Suppress per-tag output; emit only the final summary line |
+| `--porcelain` | Emit machine-readable output suitable for scripting (see below) |
+| `-v`, `--verbose` | Emit additional operational detail (skipped tags, full HEAD SHA) |
 | `-V`, `--version` | Show the application version |
 | `-h`, `--help` | Show usage |
 
@@ -88,6 +91,89 @@ Floating tags are always moved to the latest release. Exact release tags are pin
 ### Remote synchronization
 
 `--push` uses delete-then-push to keep remote floating tags aligned. Floating remote tags are updated automatically; conflicting exact remote release tags require `--force`.
+
+### Dry-run mode
+
+`--dry-run` runs all validation and conflict checks without mutating anything — no local tags are created, moved, or deleted, and nothing is pushed to the remote. The output uses "would create / move / migrate / push" phrasing to make it clear no changes were made.
+
+```sh
+# Preview what gitsem would do for a new release
+gitsem --dry-run 1.3.4
+
+# Preview a style migration without committing to it
+gitsem --dry-run --switch v1.3.4
+
+# Preview a full push in dry-run mode (remote conflicts are still detected)
+gitsem --dry-run --push 1.3.4
+```
+
+### Output modes
+
+| Mode | Flag | Per-tag lines | Skipped lines | Summary | HEAD SHA |
+|---|---|---|---|---|---|
+| Default | *(none)* | ✓ | — | ✓ | 12 chars |
+| Verbose | `-v` | ✓ | ✓ | ✓ | full |
+| Quiet | `-q` | — | — | ✓ | — |
+| Porcelain | `--porcelain` | `ACTION tag` | always | `status ok` | `head <full-sha>` |
+
+### Porcelain output
+
+`--porcelain` emits one line per operation in a stable, space-separated format suitable for scripting. Every field is on its own line; the order is always fixed; `skipped` and `remote-skipped` lines are always present when applicable.
+
+```
+head <full-sha>
+dry-run true          ← only present when --dry-run is used
+switched <tag>
+deleted <tag>
+created <tag>
+moved <tag>
+skipped <tag>
+pushed <tag>
+remote-skipped <tag>
+status ok             ← always the last line
+```
+
+Example — parse created tags in a shell script:
+
+```sh
+gitsem --porcelain 1.3.4 | awk '$1 == "created" { print $2 }'
+```
+
+Example — check for a specific tag in CI:
+
+```sh
+gitsem --porcelain --dry-run 1.3.4 | grep -q "^created 1.3.4" && echo "will create 1.3.4"
+```
+
+### Error format
+
+All errors are written to stderr in a structured, machine-readable format:
+
+```
+error[token]: human-readable description
+hint: one-line remedy           ← when available
+```
+
+The `token` maps directly to an exit code and is stable across versions:
+
+| Token | Exit code | Meaning |
+|---|---|---|
+| `invalid-version` | `1` | Version string is not a recognised form |
+| `unhealthy-repo` | `2` | Repository is not in a safe state for tag mutation |
+| `style-mismatch` | `3` | Prefix style of the request differs from the repository |
+| `tag-conflict` | `4` | A local tag conflict prevents safe operation |
+| `remote-conflict` | `5` | A remote tag conflict prevents safe operation |
+| `remote-permission` | `6` | Remote operation failed due to access or server policy |
+| `git-execution` | `7` | Git subprocess failed for an unexpected reason |
+
+Example — check the error token in a script:
+
+```sh
+output=$(gitsem v1.3.4 2>&1)
+if echo "$output" | grep -q '^error\[style-mismatch\]'; then
+  gitsem --switch v1.3.4
+fi
+```
 
 ### Exit codes
 

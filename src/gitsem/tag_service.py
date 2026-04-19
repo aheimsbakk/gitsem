@@ -20,6 +20,8 @@ from .versioning import ParsedVersion
 class ApplyResult:
     """Summary of all tag operations performed during a single run."""
 
+    head_commit: str = ""   # Full SHA-1 of the commit that was tagged.
+    dry_run: bool = False   # True when no mutations were made.
     created: list[str] = field(default_factory=list)
     moved: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
@@ -57,8 +59,8 @@ def detect_style(
     if prefixed and unprefixed:
         raise TagConflictError(
             "Repository has a mix of prefixed (e.g. v1.3) and unprefixed "
-            "(e.g. 1.3) managed version tags. This state is ambiguous and "
-            "unsafe. Please resolve the inconsistency manually."
+            "(e.g. 1.3) managed version tags. This state is ambiguous and unsafe.",
+            hint="resolve the tag-style inconsistency manually before running gitsem",
         )
 
     return "v" if prefixed else ""
@@ -84,8 +86,8 @@ def _assert_not_annotated(name: str, info: git_ops.TagInfo, context: str) -> Non
     if info.annotated:
         raise TagConflictError(
             f"Tag {name!r} is an annotated tag{context}. "
-            "gitsem only manages lightweight tags. "
-            "Delete or convert the annotated tag manually."
+            "gitsem only manages lightweight tags.",
+            hint="delete or convert the annotated tag manually, then retry",
         )
 
 
@@ -93,11 +95,14 @@ def _execute_switch(
     new_prefix: str,
     managed_tags: dict[str, git_ops.TagInfo],
     result: ApplyResult,
+    *,
+    dry_run: bool = False,
 ) -> None:
     """Migrate all managed tags from their current prefix style to *new_prefix*.
 
     For each old-style tag a new-style tag is created pointing to the same
-    commit, then the old-style tag is deleted.
+    commit, then the old-style tag is deleted.  In dry-run mode the tag
+    inventory is read but no mutations are made.
     """
     # Guard: no annotated managed tags may be migrated.
     for name, info in managed_tags.items():
@@ -118,19 +123,22 @@ def _execute_switch(
                 raise TagConflictError(
                     f"Cannot migrate {old_name!r} → {new_name!r}: "
                     f"target already exists at a different commit "
-                    f"({existing_commit[:8]} vs {commit[:8]})."
+                    f"({existing_commit[:8]} vs {commit[:8]}).",
+                    hint="resolve the tag collision manually before switching styles",
                 )
 
     # Create new-style tags first (fail before deleting anything on error).
     for old_name, (new_name, commit) in migration.items():
         if new_name not in managed_tags:
-            git_ops.create_tag(new_name, commit)
+            if not dry_run:
+                git_ops.create_tag(new_name, commit)
             result.switched.append(new_name)
 
     # Delete old-style tags.
     for old_name, (new_name, _) in migration.items():
         if old_name != new_name:
-            git_ops.delete_local_tag(old_name)
+            if not dry_run:
+                git_ops.delete_local_tag(old_name)
             result.deleted.append(old_name)
 
 
@@ -139,8 +147,13 @@ def _execute_version_tags(
     managed_tags: dict[str, git_ops.TagInfo],
     head_commit: str,
     result: ApplyResult,
+    *,
+    dry_run: bool = False,
 ) -> None:
-    """Create or move managed tags for the given version."""
+    """Create or move managed tags for the given version.
+
+    In dry-run mode all conflict checks still run but no tags are mutated.
+    """
     floating = versioning.get_floating_tags(parsed)
     exact = versioning.get_exact_tag(parsed)
 
@@ -159,11 +172,12 @@ def _execute_version_tags(
             raise TagConflictError(
                 f"Exact release tag {exact!r} already exists on commit "
                 f"{info.commit[:8]}, which is not HEAD ({head_commit[:8]}). "
-                "gitsem will not silently overwrite an exact release tag. "
-                "If this was intentional, delete the tag manually first."
+                "gitsem will not silently overwrite an exact release tag.",
+                hint="delete the tag manually first if this was intentional",
             )
     else:
-        git_ops.create_tag(exact, head_commit)
+        if not dry_run:
+            git_ops.create_tag(exact, head_commit)
         result.created.append(exact)
 
     # --- Floating tags ----------------------------------------------------
@@ -173,11 +187,13 @@ def _execute_version_tags(
             if info.commit == head_commit:
                 result.skipped.append(tag)
             else:
-                git_ops.delete_local_tag(tag)
-                git_ops.create_tag(tag, head_commit)
+                if not dry_run:
+                    git_ops.delete_local_tag(tag)
+                    git_ops.create_tag(tag, head_commit)
                 result.moved.append(tag)
         else:
-            git_ops.create_tag(tag, head_commit)
+            if not dry_run:
+                git_ops.create_tag(tag, head_commit)
             result.created.append(tag)
 
 
@@ -187,12 +203,15 @@ def _execute_push(
     force: bool,
     result: ApplyResult,
     remote: str = "origin",
+    *,
+    dry_run: bool = False,
 ) -> None:
     """Synchronize the managed tags for *parsed* to *remote*.
 
-    Uses delete-then-push for tags that exist on the remote at a different
-    commit.  Requires *force* to overwrite conflicting managed remote tags.
-    Refuses to touch annotated remote tags under all circumstances.
+    Uses delete-then-push for tags that need to move.  Floating remote tags
+    are updated freely; exact remote release tags require *force* to overwrite.
+    Annotated remote tags are never replaced.  In dry-run mode the remote is
+    queried for conflict detection but no pushes or deletes are performed.
     """
     managed_tag_names = versioning.derive_managed_tags(parsed)
     exact_tag = versioning.get_exact_tag(parsed)
@@ -210,23 +229,25 @@ def _execute_push(
             # Remote tag points to a different commit — always reject annotated.
             if remote_info.annotated:
                 raise RemoteConflictError(
-                    f"Remote tag {tag!r} is an annotated tag at a different "
-                    "commit. gitsem will not replace annotated remote tags. "
-                    "Remove it manually on the remote first."
+                    f"Remote tag {tag!r} is an annotated tag pointing to a different commit. "
+                    "gitsem will not replace annotated remote tags.",
+                    hint="remove the annotated tag on the remote manually, then retry",
                 )
             # Exact release tags are pinned: require --force to overwrite.
             if is_exact and not force:
                 raise RemoteConflictError(
                     f"Remote exact release tag {tag!r} exists at a different "
-                    f"commit ({remote_info.commit[:8]}). "
-                    "Use --force to overwrite conflicting managed remote tags."
+                    f"commit ({remote_info.commit[:8]}).",
+                    hint="rerun with --force to overwrite the conflicting remote tag",
                 )
             # Floating tags or force=True: delete-then-push.
-            git_ops.delete_remote_tag(tag, remote)
-            git_ops.push_tag(tag, remote)
+            if not dry_run:
+                git_ops.delete_remote_tag(tag, remote)
+                git_ops.push_tag(tag, remote)
             result.pushed.append(tag)
         else:
-            git_ops.push_tag(tag, remote)
+            if not dry_run:
+                git_ops.push_tag(tag, remote)
             result.pushed.append(tag)
 
 
@@ -242,6 +263,7 @@ def apply(
     push: bool,
     force: bool,
     verbose: bool,
+    dry_run: bool = False,
 ) -> ApplyResult:
     """Apply managed version tags to HEAD.
 
@@ -253,16 +275,20 @@ def apply(
         5. Local tag creation / movement.
         6. Optional remote synchronization (when *push* is True).
 
+    When *dry_run* is True all validation and conflict checks run normally
+    but no tags are created, moved, deleted, or pushed.
+
     Returns:
-        ApplyResult describing every operation performed.
+        ApplyResult describing every operation performed (or planned).
 
     Raises:
         Any subclass of GitsemError on failure.
     """
-    result = ApplyResult()
+    result = ApplyResult(dry_run=dry_run)
 
     # 1. Health check — also returns HEAD commit for free.
     head_commit = git_ops.health_check()
+    result.head_commit = head_commit
 
     # 2. Parse version.
     parsed = versioning.parse_version(version_str)
@@ -281,23 +307,30 @@ def apply(
             )
             requested_desc = "prefixed" if parsed.prefix == "v" else "unprefixed"
             raise StyleMismatchError(
-                f"Repository already uses {existing_desc} release tags, but "
-                f"{version_str!r} is {requested_desc}. "
-                "Use --switch to migrate all managed tags to the new style."
+                f"Repository already uses {existing_desc} release tags, "
+                f"but {version_str!r} is {requested_desc}.",
+                hint="rerun with --switch to migrate all managed tags to the new style",
             )
 
         # Perform switch migration.
-        _execute_switch(parsed.prefix, managed_tags, result)
+        _execute_switch(parsed.prefix, managed_tags, result, dry_run=dry_run)
 
-        # Reload tag inventory so subsequent steps see the migrated state.
-        local_tags = git_ops.list_local_tags()
-        managed_tags = _get_managed_subset(local_tags)
+        if dry_run:
+            # Simulate the post-switch tag state without reloading from disk.
+            managed_tags = {
+                versioning.switch_tag_prefix(name, parsed.prefix): info
+                for name, info in managed_tags.items()
+            }
+        else:
+            # Reload tag inventory so subsequent steps see the migrated state.
+            local_tags = git_ops.list_local_tags()
+            managed_tags = _get_managed_subset(local_tags)
 
     # 5. Apply version tags locally.
-    _execute_version_tags(parsed, managed_tags, head_commit, result)
+    _execute_version_tags(parsed, managed_tags, head_commit, result, dry_run=dry_run)
 
     # 6. Remote synchronization.
     if push:
-        _execute_push(parsed, head_commit, force, result)
+        _execute_push(parsed, head_commit, force, result, dry_run=dry_run)
 
     return result

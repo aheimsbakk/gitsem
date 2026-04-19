@@ -262,5 +262,163 @@ class TestDepthTransition(unittest.TestCase):
         self.assertEqual(result.created, ["1.3.0"])
 
 
+class TestDryRunGreenfield(unittest.TestCase):
+    """dry_run=True on a fresh repo plans tags but makes no mutations."""
+
+    _HEAD = "f" * 40
+
+    @patch("gitsem.tag_service.git_ops.create_tag")
+    @patch("gitsem.tag_service.git_ops.list_local_tags", return_value={})
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="f" * 40)
+    def test_creates_no_actual_tags(
+        self,
+        mock_health: MagicMock,
+        mock_list: MagicMock,
+        mock_create: MagicMock,
+    ) -> None:
+        from gitsem.tag_service import apply
+
+        result = apply(
+            "1.3.5", switch=False, push=False, force=False, verbose=False, dry_run=True
+        )
+        mock_create.assert_not_called()
+        self.assertEqual(sorted(result.created), ["1", "1.3", "1.3.5"])
+        self.assertTrue(result.dry_run)
+
+    @patch("gitsem.tag_service.git_ops.list_local_tags", return_value={})
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="f" * 40)
+    def test_head_commit_set_in_result(
+        self,
+        mock_health: MagicMock,
+        mock_list: MagicMock,
+    ) -> None:
+        from gitsem.tag_service import apply
+
+        result = apply(
+            "1.3.5", switch=False, push=False, force=False, verbose=False, dry_run=True
+        )
+        self.assertEqual(result.head_commit, "f" * 40)
+        self.assertTrue(result.dry_run)
+
+
+class TestDryRunSwitch(unittest.TestCase):
+    """dry_run=True with switch=True simulates migration in memory without mutations."""
+
+    _HEAD = "a" * 40
+
+    @patch("gitsem.tag_service.git_ops.create_tag")
+    @patch("gitsem.tag_service.git_ops.delete_local_tag")
+    @patch("gitsem.tag_service.git_ops.list_local_tags")
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="a" * 40)
+    def test_switch_dry_run_no_mutations(
+        self,
+        mock_health: MagicMock,
+        mock_list: MagicMock,
+        mock_delete: MagicMock,
+        mock_create: MagicMock,
+    ) -> None:
+        mock_list.return_value = {
+            "1": TagInfo(commit="a" * 40, annotated=False),
+            "1.2": TagInfo(commit="a" * 40, annotated=False),
+            "1.2.3": TagInfo(commit="a" * 40, annotated=False),
+        }
+        from gitsem.tag_service import apply
+
+        result = apply(
+            "v1.2.4", switch=True, push=False, force=False, verbose=False, dry_run=True
+        )
+        mock_create.assert_not_called()
+        mock_delete.assert_not_called()
+        # list_local_tags called only once — no post-switch reload in dry-run.
+        mock_list.assert_called_once()
+
+    @patch("gitsem.tag_service.git_ops.create_tag")
+    @patch("gitsem.tag_service.git_ops.delete_local_tag")
+    @patch("gitsem.tag_service.git_ops.list_local_tags")
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="a" * 40)
+    def test_switch_dry_run_plans_migration(
+        self,
+        mock_health: MagicMock,
+        mock_list: MagicMock,
+        mock_delete: MagicMock,
+        mock_create: MagicMock,
+    ) -> None:
+        mock_list.return_value = {
+            "1": TagInfo(commit="a" * 40, annotated=False),
+            "1.2": TagInfo(commit="a" * 40, annotated=False),
+            "1.2.3": TagInfo(commit="a" * 40, annotated=False),
+        }
+        from gitsem.tag_service import apply
+
+        result = apply(
+            "v1.2.4", switch=True, push=False, force=False, verbose=False, dry_run=True
+        )
+        self.assertEqual(sorted(result.switched), ["v1", "v1.2", "v1.2.3"])
+        self.assertEqual(sorted(result.deleted), ["1", "1.2", "1.2.3"])
+        # New version tag should be planned (in-memory simulation sees prefixed tags at HEAD).
+        self.assertIn("v1.2.4", result.created)
+
+
+class TestDryRunPush(unittest.TestCase):
+    """dry_run=True with push=True checks remote conflicts without pushing."""
+
+    _HEAD = "a" * 40
+
+    @patch("gitsem.tag_service.git_ops.push_tag")
+    @patch("gitsem.tag_service.git_ops.delete_remote_tag")
+    @patch("gitsem.tag_service.git_ops.list_remote_tags", return_value={})
+    @patch("gitsem.tag_service.git_ops.create_tag")
+    @patch("gitsem.tag_service.git_ops.list_local_tags", return_value={})
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="a" * 40)
+    def test_push_dry_run_no_actual_push(
+        self,
+        mock_health: MagicMock,
+        mock_list: MagicMock,
+        mock_create: MagicMock,
+        mock_remote_list: MagicMock,
+        mock_delete_remote: MagicMock,
+        mock_push: MagicMock,
+    ) -> None:
+        from gitsem.tag_service import apply
+
+        result = apply(
+            "1.3.5", switch=False, push=True, force=False, verbose=False, dry_run=True
+        )
+        mock_push.assert_not_called()
+        mock_delete_remote.assert_not_called()
+        mock_create.assert_not_called()
+        # All three managed tags should be planned for push.
+        self.assertEqual(sorted(result.pushed), ["1", "1.3", "1.3.5"])
+
+    @patch("gitsem.tag_service.git_ops.push_tag")
+    @patch("gitsem.tag_service.git_ops.delete_remote_tag")
+    @patch("gitsem.tag_service.git_ops.list_remote_tags")
+    @patch("gitsem.tag_service.git_ops.create_tag")
+    @patch("gitsem.tag_service.git_ops.list_local_tags", return_value={})
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="a" * 40)
+    def test_push_dry_run_detects_remote_conflict(
+        self,
+        mock_health: MagicMock,
+        mock_list: MagicMock,
+        mock_create: MagicMock,
+        mock_remote_list: MagicMock,
+        mock_delete_remote: MagicMock,
+        mock_push: MagicMock,
+    ) -> None:
+        from gitsem.errors import RemoteConflictError
+        from gitsem.git_ops import TagInfo as RemoteTagInfo
+        from gitsem.tag_service import apply
+
+        # Simulate remote exact tag pointing to a different commit.
+        mock_remote_list.return_value = {
+            "1.3.5": RemoteTagInfo(commit="old" + "0" * 37, annotated=False),
+        }
+        with self.assertRaises(RemoteConflictError):
+            apply(
+                "1.3.5", switch=False, push=True, force=False, verbose=False, dry_run=True
+            )
+        mock_push.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

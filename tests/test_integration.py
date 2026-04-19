@@ -455,5 +455,149 @@ class TestUnhealthyRepository(unittest.TestCase):
             self.assertEqual(result.returncode, 2, result.stderr)
 
 
+class TestDryRun(unittest.TestCase):
+    """--dry-run validates and plans without making any mutations."""
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.repo = self._tmpdir.name
+        self.head = _setup_repo(self.repo)
+
+    def tearDown(self) -> None:
+        self._tmpdir.cleanup()
+
+    def test_dry_run_creates_no_tags(self) -> None:
+        result = _run_gitsem(["--dry-run", "1.3.4"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(_list_tags(self.repo), [])
+
+    def test_dry_run_exits_zero_on_clean_repo(self) -> None:
+        result = _run_gitsem(["--dry-run", "1.3.4"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_dry_run_still_detects_exact_tag_conflict(self) -> None:
+        _run_gitsem(["1.3.4"], self.repo)
+        _make_commit(self.repo, "second")
+        # Conflict on exact tag must still be detected in dry-run.
+        result = _run_gitsem(["--dry-run", "1.3.4"], self.repo)
+        self.assertEqual(result.returncode, 4, result.stderr)
+
+    def test_dry_run_still_detects_style_mismatch(self) -> None:
+        _run_gitsem(["1.3.4"], self.repo)
+        result = _run_gitsem(["--dry-run", "v1.3.5"], self.repo)
+        self.assertEqual(result.returncode, 3, result.stderr)
+
+    def test_dry_run_output_contains_would_phrasing(self) -> None:
+        result = _run_gitsem(["--dry-run", "1.3.4"], self.repo)
+        self.assertIn("would", result.stdout)
+
+    def test_dry_run_output_contains_dry_run_suffix(self) -> None:
+        result = _run_gitsem(["--dry-run", "1.3.4"], self.repo)
+        self.assertIn("dry run", result.stdout)
+
+
+class TestPorcelainOutput(unittest.TestCase):
+    """--porcelain emits machine-readable output parseable by scripts."""
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.repo = self._tmpdir.name
+        self.head = _setup_repo(self.repo)
+
+    def tearDown(self) -> None:
+        self._tmpdir.cleanup()
+
+    @staticmethod
+    def _parse(output: str) -> dict:
+        """Parse porcelain output into a dict with a 'tags' sub-dict."""
+        parsed: dict = {"tags": {}}
+        for line in output.splitlines():
+            parts = line.split(None, 1)
+            if not parts:
+                continue
+            key = parts[0]
+            value = parts[1] if len(parts) > 1 else ""
+            if key in ("head", "status", "dry-run"):
+                parsed[key] = value
+            else:
+                parsed["tags"].setdefault(key, []).append(value)
+        return parsed
+
+    def test_porcelain_create(self) -> None:
+        result = _run_gitsem(["--porcelain", "1.3.4"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        parsed = self._parse(result.stdout)
+        self.assertEqual(parsed.get("head"), self.head)
+        self.assertEqual(parsed.get("status"), "ok")
+        self.assertIn("1.3.4", parsed["tags"].get("created", []))
+        self.assertIn("1.3", parsed["tags"].get("created", []))
+        self.assertIn("1", parsed["tags"].get("created", []))
+
+    def test_porcelain_status_ok_always_last(self) -> None:
+        result = _run_gitsem(["--porcelain", "1.3.4"], self.repo)
+        self.assertTrue(result.stdout.strip().endswith("status ok"))
+
+    def test_porcelain_dry_run_line(self) -> None:
+        result = _run_gitsem(["--porcelain", "--dry-run", "1.3.4"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        parsed = self._parse(result.stdout)
+        self.assertEqual(parsed.get("dry-run"), "true")
+        # No actual tags created.
+        self.assertEqual(_list_tags(self.repo), [])
+
+    def test_porcelain_no_dry_run_line_when_not_set(self) -> None:
+        result = _run_gitsem(["--porcelain", "1.3.4"], self.repo)
+        self.assertNotIn("dry-run", result.stdout)
+
+    def test_porcelain_skipped_when_idempotent(self) -> None:
+        _run_gitsem(["1.3.4"], self.repo)
+        result = _run_gitsem(["--porcelain", "1.3.4"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        parsed = self._parse(result.stdout)
+        skipped = parsed["tags"].get("skipped", [])
+        self.assertIn("1.3.4", skipped)
+        self.assertIn("1.3", skipped)
+        self.assertIn("1", skipped)
+
+    def test_porcelain_moved_tags(self) -> None:
+        _run_gitsem(["1.3.4"], self.repo)
+        _make_commit(self.repo, "release 1.3.5")
+        result = _run_gitsem(["--porcelain", "1.3.5"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        parsed = self._parse(result.stdout)
+        self.assertIn("1", parsed["tags"].get("moved", []))
+        self.assertIn("1.3", parsed["tags"].get("moved", []))
+        self.assertIn("1.3.5", parsed["tags"].get("created", []))
+
+
+class TestErrorFormat(unittest.TestCase):
+    """Errors are emitted as error[token]: message with optional hint: line."""
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.repo = self._tmpdir.name
+        _setup_repo(self.repo)
+        _run_gitsem(["1.3.4"], self.repo)
+        _make_commit(self.repo, "second commit")
+
+    def tearDown(self) -> None:
+        self._tmpdir.cleanup()
+
+    def test_error_token_format_on_conflict(self) -> None:
+        result = _run_gitsem(["1.3.4"], self.repo)
+        self.assertEqual(result.returncode, 4)
+        self.assertIn("error[tag-conflict]:", result.stderr)
+
+    def test_hint_line_on_conflict(self) -> None:
+        result = _run_gitsem(["1.3.4"], self.repo)
+        self.assertEqual(result.returncode, 4)
+        self.assertIn("hint:", result.stderr)
+
+    def test_style_mismatch_token(self) -> None:
+        result = _run_gitsem(["v1.3.5"], self.repo)
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("error[style-mismatch]:", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

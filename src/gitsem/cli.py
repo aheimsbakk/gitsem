@@ -56,8 +56,19 @@ def _delete(msg: str) -> None:
     print(f"{_DIM}-{_RESET} {msg}")
 
 
-def _err(msg: str) -> None:
-    print(f"error: {msg}", file=sys.stderr)
+def _err(exc: Exception) -> None:
+    """Emit a structured error to stderr.
+
+    For GitsemError subclasses emits ``error[token]: message`` followed
+    optionally by a ``hint: ...`` line.  For all other exceptions emits the
+    plain ``error: message`` form.
+    """
+    if isinstance(exc, GitsemError):
+        print(f"error[{exc.token}]: {exc}", file=sys.stderr)
+        if exc.hint:
+            print(f"hint: {exc.hint}", file=sys.stderr)
+    else:
+        print(f"error: {exc}", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -106,10 +117,33 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Validate and plan all operations without making any mutations. "
+            "Conflict checks still run."
+        ),
+    )
+    parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Suppress per-tag output; emit only the final summary line.",
+    )
+    parser.add_argument(
+        "--porcelain",
+        action="store_true",
+        help=(
+            "Emit machine-readable output: one ACTION TAG line per operation "
+            "(skipped and remote-skipped always included), a head line, and a "
+            "status line. Suitable for scripting."
+        ),
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
-        help="Emit additional operational detail.",
+        help="Emit additional operational detail (skipped tags, full HEAD SHA).",
     )
     parser.add_argument(
         "-V",
@@ -128,56 +162,121 @@ def _build_parser() -> argparse.ArgumentParser:
 def _print_result(
     result: tag_service.ApplyResult,
     version_str: str,
+    *,
     verbose: bool,
+    quiet: bool,
+    porcelain: bool,
 ) -> None:
-    """Print a concise, user-friendly operation summary."""
-    any_output = False
+    """Print operation summary in the requested output mode.
 
+    Modes (evaluated in priority order: porcelain > quiet > verbose > default):
+      - porcelain: machine-readable lines; all actions always emitted to stdout.
+      - quiet:     summary or no-op message only; no per-tag lines; no HEAD shown.
+      - verbose:   per-tag lines + skipped/remote-skipped + summary + full HEAD SHA.
+      - default:   per-tag lines (no skipped) + summary + 12-char HEAD SHA.
+    """
+    if porcelain:
+        _print_porcelain(result)
+        return
+
+    _print_human(result, version_str, verbose=verbose, quiet=quiet)
+
+
+def _print_porcelain(result: tag_service.ApplyResult) -> None:
+    """Emit machine-readable output; all actions always included."""
+    print(f"head {result.head_commit}")
+    if result.dry_run:
+        print("dry-run true")
     for tag in result.switched:
-        _switch(f"migrated  {tag}")
-        any_output = True
+        print(f"switched {tag}")
     for tag in result.deleted:
-        _delete(f"removed   {tag}")
-        any_output = True
+        print(f"deleted {tag}")
     for tag in result.created:
-        _ok(f"created   {tag}")
-        any_output = True
+        print(f"created {tag}")
     for tag in result.moved:
-        _move(f"moved     {tag}")
-        any_output = True
-    if verbose:
-        for tag in result.skipped:
-            _skip(f"skipped   {tag}  (already at HEAD)")
-            any_output = True
+        print(f"moved {tag}")
+    for tag in result.skipped:
+        print(f"skipped {tag}")
     for tag in result.pushed:
-        _push(f"pushed    {tag}  → origin")
-        any_output = True
-    if verbose:
-        for tag in result.remote_skipped:
-            _skip(f"skipped   {tag}  (remote already at HEAD)")
-            any_output = True
+        print(f"pushed {tag}")
+    for tag in result.remote_skipped:
+        print(f"remote-skipped {tag}")
+    print("status ok")
 
-    if not any_output and not result.skipped and not result.remote_skipped:
-        # Nothing happened at all — shouldn't normally occur, but be safe.
+
+def _print_human(
+    result: tag_service.ApplyResult,
+    version_str: str,
+    *,
+    verbose: bool,
+    quiet: bool,
+) -> None:
+    """Emit human-readable output (default, quiet, or verbose)."""
+    dry_run = result.dry_run
+    head = result.head_commit
+
+    # Verb phrasing varies for dry-run vs real operations.
+    verb_create = "would create" if dry_run else "created  "
+    verb_move   = "would move  " if dry_run else "moved    "
+    verb_switch = "would migrate" if dry_run else "migrated "
+    verb_delete = "would remove" if dry_run else "removed  "
+    verb_push   = "would push  " if dry_run else "pushed   "
+
+    if not quiet:
+        for tag in result.switched:
+            _switch(f"{verb_switch} {tag}")
+        for tag in result.deleted:
+            _delete(f"{verb_delete} {tag}")
+        for tag in result.created:
+            _ok(f"{verb_create} {tag}")
+        for tag in result.moved:
+            _move(f"{verb_move} {tag}")
+        if verbose:
+            for tag in result.skipped:
+                _skip(f"skipped   {tag}  (already at HEAD)")
+        for tag in result.pushed:
+            _push(f"{verb_push}  {tag}  → origin")
+        if verbose:
+            for tag in result.remote_skipped:
+                _skip(f"skipped   {tag}  (remote already at HEAD)")
+
+    # Determine which summary branch to use.
+    has_mutations = bool(
+        result.created or result.moved or result.switched
+        or result.deleted or result.pushed
+    )
+    has_skipped = bool(result.skipped or result.remote_skipped)
+
+    if not has_mutations and not has_skipped:
         print(f"Nothing to do for {version_str}.")
-    elif not any_output:
-        # Everything was already correct.
+    elif not has_mutations:
         print(f"All managed tags for {version_str} are already up to date.")
     else:
-        # Print a blank line then a compact totals line.
         parts: list[str] = []
         if result.created:
-            parts.append(f"{len(result.created)} created")
+            noun = "would be created" if dry_run else "created"
+            parts.append(f"{len(result.created)} {noun}")
         if result.moved:
-            parts.append(f"{len(result.moved)} moved")
+            noun = "would be moved" if dry_run else "moved"
+            parts.append(f"{len(result.moved)} {noun}")
         if result.switched:
-            parts.append(f"{len(result.switched)} migrated")
+            noun = "would be migrated" if dry_run else "migrated"
+            parts.append(f"{len(result.switched)} {noun}")
         if result.pushed:
-            parts.append(f"{len(result.pushed)} pushed")
+            noun = "would be pushed" if dry_run else "pushed"
+            parts.append(f"{len(result.pushed)} {noun}")
         if result.skipped and not verbose:
             parts.append(f"{len(result.skipped)} skipped")
         if parts:
-            print(f"\n  {', '.join(parts)}.")
+            suffix = " (dry run)" if dry_run else ""
+            print(f"\n  {', '.join(parts)}{suffix}.")
+
+    # HEAD SHA — suppressed in quiet mode and when head is unknown.
+    if not quiet and head:
+        if verbose:
+            print(f"HEAD: {head}")
+        else:
+            print(f"HEAD: {head[:12]}")
 
 
 # ---------------------------------------------------------------------------
@@ -196,16 +295,23 @@ def main(argv: list[str] | None = None) -> None:
             push=args.push,
             force=args.force,
             verbose=args.verbose,
+            dry_run=args.dry_run,
         )
     except GitsemError as exc:
-        _err(str(exc))
+        _err(exc)
         sys.exit(exc.exit_code)
     except subprocess.TimeoutExpired as exc:
-        _err(f"Git command timed out: {exc}")
+        print(f"error[git-execution]: Git command timed out: {exc}", file=sys.stderr)
         sys.exit(EXIT_GIT_EXECUTION)
     except Exception as exc:  # noqa: BLE001
-        _err(f"Unexpected error: {exc}")
+        print(f"error[git-execution]: Unexpected error: {exc}", file=sys.stderr)
         sys.exit(EXIT_GIT_EXECUTION)
 
-    _print_result(result, args.version, args.verbose)
+    _print_result(
+        result,
+        args.version,
+        verbose=args.verbose,
+        quiet=args.quiet,
+        porcelain=args.porcelain,
+    )
     sys.exit(EXIT_OK)
