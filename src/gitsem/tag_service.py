@@ -259,7 +259,7 @@ def _execute_push(
 def apply(
     version_str: str,
     *,
-    switch: bool,
+    migrate: bool,
     push: bool,
     force: bool,
     verbose: bool,
@@ -271,7 +271,7 @@ def apply(
         1. Repository health check.
         2. Version parsing.
         3. Local tag inventory and style detection.
-        4. Style-mismatch guard (or migration when *switch* is True).
+        4. Style-mismatch guard (or migration when *migrate* is True).
         5. Local tag creation / movement.
         6. Optional remote synchronization (when *push* is True).
 
@@ -301,7 +301,7 @@ def apply(
     detected_style = detect_style(managed_tags)
 
     if detected_style is not None and detected_style != parsed.prefix:
-        if not switch:
+        if not migrate:
             existing_desc = (
                 "prefixed (e.g. v1.2.3)" if detected_style == "v" else "unprefixed (e.g. 1.2.3)"
             )
@@ -309,10 +309,10 @@ def apply(
             raise StyleMismatchError(
                 f"Repository already uses {existing_desc} release tags, "
                 f"but {version_str!r} is {requested_desc}.",
-                hint="rerun with --switch to migrate all managed tags to the new style",
+                hint="rerun with --migrate to migrate all managed tags to the new style",
             )
 
-        # Perform switch migration.
+        # Perform migration.
         _execute_switch(parsed.prefix, managed_tags, result, dry_run=dry_run)
 
         if dry_run:

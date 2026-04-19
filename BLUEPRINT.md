@@ -8,12 +8,12 @@ Examples:
 - `gitsem v1.3.4`
 - `gitsem 1.3`
 - `gitsem --push 1.3.4`
-- `gitsem --switch v1.3.4`
+- `gitsem --migrate v1.3.4`
 - `gitsem --push --force 1.3.4`
 
 The command must preserve the caller's prefix style. If the requested version is `v1.3.4`, managed tags are `v1`, `v1.3`, and `v1.3.4`. If the requested version is `1.3.4`, managed tags are `1`, `1.3`, and `1.3.4`.
 
-The tool must detect the repository's current release-tag style and protect it by default. If the repository already uses prefixed release tags, an unprefixed request must fail with a clear error. If the repository already uses unprefixed release tags, a prefixed request must fail with a clear error. The user may pass `--switch` to migrate managed release tags to the requested style.
+The tool must detect the repository's current release-tag style and protect it by default. If the repository already uses prefixed release tags, an unprefixed request must fail with a clear error. If the repository already uses unprefixed release tags, a prefixed request must fail with a clear error. The user may pass `--migrate` to migrate managed release tags to the requested style.
 
 ## 2. Primary goal
 Make Git tags behave like Docker-style moving channels while preserving the repository's chosen prefix style:
@@ -35,8 +35,8 @@ The first implementation must:
 - accept both prefixed and unprefixed version styles without stripping the prefix
 - derive managed tags that match the chosen version depth and prefix style
 - detect whether the repository currently uses prefixed or unprefixed managed release tags
-- reject style mismatches unless `--switch` is explicitly requested
-- migrate managed release tags to the requested style when `--switch` is used
+  - reject style mismatches unless `--migrate` is explicitly requested
+  - migrate managed release tags to the requested style when `--migrate` is used
 - create missing local tags
 - move existing floating local tags to `HEAD` when they already exist elsewhere
 - operate only on healthy Git repositories
@@ -83,8 +83,8 @@ Depth transition rules:
 Style detection and switching:
 - The tool must inspect existing managed release tags to detect whether the repository uses prefixed or unprefixed release tags
 - If the detected style differs from the requested style, the command must fail with a warning and explain that another release-tag style is already in use
-- `--switch` authorizes migration of managed release tags from one style to the other
-- `--switch` must migrate all managed historical version tags in the repository to the requested style, not only the currently requested version family
+  - `--migrate` authorizes migration of managed release tags from one style to the other
+  - `--migrate` must migrate all managed historical version tags in the repository to the requested style, not only the currently requested version family
 - Style switching must update only managed version tags and must not touch unrelated non-version tags
 - During a style switch, old-style managed tags must be replaced with equivalent new-style managed tags that point to the same intended commits after reconciliation
 
@@ -111,7 +111,7 @@ When `--push` is used **without a version**, gitsem performs a **full sync** of 
 - each local managed tag is classified as 'exact' or 'floating' from the full local inventory
 - a `MAJOR.MINOR.PATCH` tag is always 'exact'; a `MAJOR` tag is always 'floating'; a `MAJOR.MINOR` tag is 'floating' if a same-prefix `MAJOR.MINOR.PATCH` sibling exists locally, 'exact' otherwise
 - the same conflict rules apply as for version-scoped push (see below)
-- `--switch` is meaningless without a version and must be rejected with a usage error
+  - `--migrate` is meaningless without a version and must be rejected with a usage error
 
 Initial remote scope:
 - target the `origin` remote
@@ -131,7 +131,7 @@ Remote conflict rules:
 Planned CLI surface for the first version:
 
 ```text
-gitsem [--push] [--force] [--switch] [--verbose] <version>
+gitsem [--push] [--force] [--migrate] [--verbose] <version>
 gitsem --push [--force] [--dry-run] [-q] [--porcelain]
 gitsem --help
 gitsem --version
@@ -140,13 +140,13 @@ gitsem --version
 Input rules:
 - `<version>` is required when tagging HEAD; accepted forms are `1.3`, `1.3.4`, `v1.3`, and `v1.3.4`
 - `<version>` may be omitted when `--push` is used alone (triggers `sync_all`)
-- `--switch` requires a `<version>` argument; using it without a version is a usage error
+  - `--migrate` requires a `<version>` argument; using it without a version is a usage error
 - prerelease and build metadata are out of scope for the first version
 
 Flags:
 - `--push`: synchronize managed tags to `origin`
 - `--force`: allow repair of conflicting managed remote tags
-- `--switch`: migrate managed release tags to the requested prefix style
+  - `--migrate`: migrate managed release tags to the requested prefix style
 - `-v`, `--verbose`: emit more detailed operational output
 - `-h`, `--help`: show usage
 - `-V`, `--version`: show the application version
@@ -162,7 +162,7 @@ Output behavior:
 - send actionable failure details to stderr
 
 Usage help:
-- CLI help must document the version formats, style detection behavior, `--switch`, `--push`, `--force`, and verbosity
+  - CLI help must document the version formats, style detection behavior, `--migrate`, `--push`, `--force`, and verbosity
 
 ## 7. Architecture plan
 The application should be organized as a small, testable package with clear boundaries:
@@ -219,8 +219,8 @@ Integration tests:
 - handle repositories that release only `MAJOR.MINOR` versions
 - allow repositories to start with `MAJOR.MINOR` releases and later use `MAJOR.MINOR.PATCH`
 - repurpose historical `MAJOR.MINOR` exact tags into floating tags when patch releases begin
-- reject style mismatch unless `--switch` is used
-- migrate managed tags when `--switch` is used
+  - reject style mismatch unless `--migrate` is used
+  - migrate managed tags when `--migrate` is used
 - synchronize against a temporary bare remote with `--push`
 - keep `--push` idempotent when remote state already matches
 - reject conflicting remote exact tags unless `--force` is used

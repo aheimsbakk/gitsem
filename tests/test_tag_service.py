@@ -36,7 +36,7 @@ class TestDetectStyle(unittest.TestCase):
 
 
 class TestApplyStyleMismatch(unittest.TestCase):
-    """apply() raises StyleMismatchError on prefix conflict without --switch."""
+    """apply() raises StyleMismatchError on prefix conflict without --migrate."""
 
     def _make_tags(self, names: list[str]) -> dict[str, TagInfo]:
         return {n: TagInfo(commit="dead" * 10, annotated=False) for n in names}
@@ -50,7 +50,7 @@ class TestApplyStyleMismatch(unittest.TestCase):
         from gitsem.tag_service import apply
 
         with self.assertRaises(StyleMismatchError):
-            apply("v1.3.5", switch=False, push=False, force=False, verbose=False)
+            apply("v1.3.5", migrate=False, push=False, force=False, verbose=False)
 
     @patch("gitsem.tag_service.git_ops.list_local_tags")
     @patch("gitsem.tag_service.git_ops.health_check", return_value="a" * 40)
@@ -61,7 +61,7 @@ class TestApplyStyleMismatch(unittest.TestCase):
         from gitsem.tag_service import apply
 
         with self.assertRaises(StyleMismatchError):
-            apply("1.3.5", switch=False, push=False, force=False, verbose=False)
+            apply("1.3.5", migrate=False, push=False, force=False, verbose=False)
 
 
 class TestApplyAnnotatedTagRejected(unittest.TestCase):
@@ -78,7 +78,7 @@ class TestApplyAnnotatedTagRejected(unittest.TestCase):
         from gitsem.tag_service import apply
 
         with self.assertRaises(TagConflictError):
-            apply("1.3.5", switch=False, push=False, force=False, verbose=False)
+            apply("1.3.5", migrate=False, push=False, force=False, verbose=False)
 
     @patch("gitsem.tag_service.git_ops.list_local_tags")
     @patch("gitsem.tag_service.git_ops.health_check", return_value="c" * 40)
@@ -91,7 +91,7 @@ class TestApplyAnnotatedTagRejected(unittest.TestCase):
         from gitsem.tag_service import apply
 
         with self.assertRaises(TagConflictError):
-            apply("1.3.5", switch=False, push=False, force=False, verbose=False)
+            apply("1.3.5", migrate=False, push=False, force=False, verbose=False)
 
 
 class TestApplyExactTagConflict(unittest.TestCase):
@@ -108,7 +108,7 @@ class TestApplyExactTagConflict(unittest.TestCase):
         from gitsem.tag_service import apply
 
         with self.assertRaises(TagConflictError):
-            apply("1.3.5", switch=False, push=False, force=False, verbose=False)
+            apply("1.3.5", migrate=False, push=False, force=False, verbose=False)
 
 
 class TestApplyIdempotent(unittest.TestCase):
@@ -128,7 +128,7 @@ class TestApplyIdempotent(unittest.TestCase):
         }
         from gitsem.tag_service import apply
 
-        result = apply("1.3.5", switch=False, push=False, force=False, verbose=False)
+        result = apply("1.3.5", migrate=False, push=False, force=False, verbose=False)
         self.assertEqual(result.created, [])
         self.assertEqual(result.moved, [])
         self.assertEqual(sorted(result.skipped), ["1", "1.3", "1.3.5"])
@@ -150,7 +150,7 @@ class TestApplyGreenfield(unittest.TestCase):
     ) -> None:
         from gitsem.tag_service import apply
 
-        result = apply("1.3.5", switch=False, push=False, force=False, verbose=False)
+        result = apply("1.3.5", migrate=False, push=False, force=False, verbose=False)
         self.assertEqual(sorted(result.created), ["1", "1.3", "1.3.5"])
         self.assertEqual(mock_create.call_count, 3)
 
@@ -179,7 +179,7 @@ class TestApplyMoveFloating(unittest.TestCase):
         }
         from gitsem.tag_service import apply
 
-        result = apply("1.3.5", switch=False, push=False, force=False, verbose=False)
+        result = apply("1.3.5", migrate=False, push=False, force=False, verbose=False)
         self.assertEqual(sorted(result.moved), ["1", "1.3"])
         self.assertEqual(result.created, ["1.3.5"])
         # Two deletes (floating tags) + one create (exact) + two recreates (floats).
@@ -222,7 +222,7 @@ class TestSwitchPlanDetailed(unittest.TestCase):
         from gitsem.tag_service import apply
 
         result = apply(
-            "v1.2.4", switch=True, push=False, force=False, verbose=False
+            "v1.2.4", migrate=True, push=False, force=False, verbose=False
         )
         # All three old tags migrated.
         self.assertEqual(sorted(result.switched), ["v1", "v1.2", "v1.2.3"])
@@ -254,7 +254,7 @@ class TestDepthTransition(unittest.TestCase):
         }
         from gitsem.tag_service import apply
 
-        result = apply("1.3.0", switch=False, push=False, force=False, verbose=False)
+        result = apply("1.3.0", migrate=False, push=False, force=False, verbose=False)
         # 1 and 1.3 should be moved to HEAD; 1.3.0 should be created.
         self.assertEqual(sorted(result.moved), ["1", "1.3"])
         self.assertEqual(result.created, ["1.3.0"])
@@ -277,7 +277,7 @@ class TestDryRunGreenfield(unittest.TestCase):
         from gitsem.tag_service import apply
 
         result = apply(
-            "1.3.5", switch=False, push=False, force=False, verbose=False, dry_run=True
+            "1.3.5", migrate=False, push=False, force=False, verbose=False, dry_run=True
         )
         mock_create.assert_not_called()
         self.assertEqual(sorted(result.created), ["1", "1.3", "1.3.5"])
@@ -293,14 +293,14 @@ class TestDryRunGreenfield(unittest.TestCase):
         from gitsem.tag_service import apply
 
         result = apply(
-            "1.3.5", switch=False, push=False, force=False, verbose=False, dry_run=True
+            "1.3.5", migrate=False, push=False, force=False, verbose=False, dry_run=True
         )
         self.assertEqual(result.head_commit, "f" * 40)
         self.assertTrue(result.dry_run)
 
 
 class TestDryRunSwitch(unittest.TestCase):
-    """dry_run=True with switch=True simulates migration in memory without mutations."""
+    """dry_run=True with migrate=True simulates migration in memory without mutations."""
 
     _HEAD = "a" * 40
 
@@ -323,7 +323,7 @@ class TestDryRunSwitch(unittest.TestCase):
         from gitsem.tag_service import apply
 
         result = apply(
-            "v1.2.4", switch=True, push=False, force=False, verbose=False, dry_run=True
+            "v1.2.4", migrate=True, push=False, force=False, verbose=False, dry_run=True
         )
         mock_create.assert_not_called()
         mock_delete.assert_not_called()
@@ -349,7 +349,7 @@ class TestDryRunSwitch(unittest.TestCase):
         from gitsem.tag_service import apply
 
         result = apply(
-            "v1.2.4", switch=True, push=False, force=False, verbose=False, dry_run=True
+            "v1.2.4", migrate=True, push=False, force=False, verbose=False, dry_run=True
         )
         self.assertEqual(sorted(result.switched), ["v1", "v1.2", "v1.2.3"])
         self.assertEqual(sorted(result.deleted), ["1", "1.2", "1.2.3"])
@@ -380,7 +380,7 @@ class TestDryRunPush(unittest.TestCase):
         from gitsem.tag_service import apply
 
         result = apply(
-            "1.3.5", switch=False, push=True, force=False, verbose=False, dry_run=True
+            "1.3.5", migrate=False, push=True, force=False, verbose=False, dry_run=True
         )
         mock_push.assert_not_called()
         mock_delete_remote.assert_not_called()
@@ -413,7 +413,7 @@ class TestDryRunPush(unittest.TestCase):
         }
         with self.assertRaises(RemoteConflictError):
             apply(
-                "1.3.5", switch=False, push=True, force=False, verbose=False, dry_run=True
+                "1.3.5", migrate=False, push=True, force=False, verbose=False, dry_run=True
             )
         mock_push.assert_not_called()
 

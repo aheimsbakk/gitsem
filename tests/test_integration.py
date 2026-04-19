@@ -201,7 +201,7 @@ class TestExactTagConflict(unittest.TestCase):
 
 
 class TestStyleMismatch(unittest.TestCase):
-    """Style-mismatch detection and --switch migration."""
+    """Style-mismatch detection and --migrate migration."""
 
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -216,10 +216,10 @@ class TestStyleMismatch(unittest.TestCase):
         result = _run_gitsem(["v1.3.5"], self.repo)
         self.assertEqual(result.returncode, 3, result.stderr)
 
-    def test_mismatch_allowed_with_switch(self) -> None:
+    def test_mismatch_allowed_with_migrate(self) -> None:
         _run_gitsem(["1.3.4"], self.repo)
         _make_commit(self.repo, "next")
-        result = _run_gitsem(["--switch", "v1.3.5"], self.repo)
+        result = _run_gitsem(["--migrate", "v1.3.5"], self.repo)
         self.assertEqual(result.returncode, 0, result.stderr)
         tags = _list_tags(self.repo)
         # New-style tags must exist.
@@ -229,13 +229,13 @@ class TestStyleMismatch(unittest.TestCase):
         for tag in ("1", "1.3", "1.3.4"):
             self.assertNotIn(tag, tags)
 
-    def test_switch_migrates_all_historical_tags(self) -> None:
-        """--switch must rename ALL historical managed tags, not just the current family."""
+    def test_migrate_migrates_all_historical_tags(self) -> None:
+        """--migrate must rename ALL historical managed tags, not just the current family."""
         _run_gitsem(["1.2.3"], self.repo)
         _make_commit(self.repo, "bump")
         _run_gitsem(["1.3.4"], self.repo)
         _make_commit(self.repo, "new")
-        result = _run_gitsem(["--switch", "v1.3.5"], self.repo)
+        result = _run_gitsem(["--migrate", "v1.3.5"], self.repo)
         self.assertEqual(result.returncode, 0, result.stderr)
         tags = _list_tags(self.repo)
         for tag in ("v1.2.3", "v1.3.4"):

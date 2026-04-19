@@ -51,7 +51,7 @@ uv run gitsem 1.3.4
 ## Usage
 
 ```
-gitsem [--push] [--force] [--switch] [--dry-run] [-q] [--porcelain] [-v] <version>
+gitsem [--push] [--force] [--migrate] [--dry-run] [-q] [--porcelain] [-v] <version>
 gitsem --push [--force] [--dry-run] [-q] [--porcelain]
 gitsem --help
 gitsem --version
@@ -59,26 +59,26 @@ gitsem --version
 
 ### Arguments
 
-| Argument | Description |
-|---|---|
-| `<version>` | Semantic version to tag HEAD with. Required unless `--push` is used alone. Accepted forms: `1.3`, `v1.3`, `1.3.4`, `v1.3.4` |
-| `--push` | Synchronize managed tags to `origin`. When used **without a version**, syncs every local managed tag to the remote (see [Sync all](#sync-all)). When used **with a version**, syncs only the managed tags for that version |
-| `--force` | Allow overwriting conflicting exact release tags on the remote (requires `--push`) |
-| `--switch` | Migrate all managed release tags to the prefix style of the requested version |
-| `--dry-run` | Validate and plan all operations without making any mutations |
-| `-q`, `--quiet` | Suppress per-tag output; emit only the final summary line |
-| `--porcelain` | Emit machine-readable output suitable for scripting (see below) |
-| `-v`, `--verbose` | Emit additional operational detail (skipped tags, full HEAD SHA) |
-| `-V`, `--version` | Show the application version |
-| `-h`, `--help` | Show usage |
+| Long | Short | Description |
+|---|---|---|
+| `<version>` | | Semantic version to tag HEAD with. Required unless `--push` is used alone. Accepted forms: `1.3`, `v1.3`, `1.3.4`, `v1.3.4` |
+| `--push` | | Synchronize managed tags to `origin`. When used **without a version**, syncs every local managed tag to the remote (see [Sync all](#sync-all)). When used **with a version**, syncs only the managed tags for that version |
+| `--force` | | Allow overwriting conflicting exact release tags on the remote (requires `--push`) |
+| `--migrate` | | Migrate all managed release tags to the prefix style of the requested version |
+| `--dry-run` | | Validate and plan all operations without making any mutations |
+| `--quiet` | `-q` | Suppress per-tag output; emit only the final summary line |
+| `--porcelain` | | Emit machine-readable output suitable for scripting (see below) |
+| `--verbose` | `-v` | Emit additional operational detail (skipped tags, full HEAD SHA) |
+| `--version` | `-V` | Show the application version |
+| `--help` | `-h` | Show usage |
 
 ### Prefix style detection
 
-`gitsem` inspects your existing managed release tags and enforces a consistent prefix style. If your repository already uses `v1.x` tags, passing `1.3.5` (unprefixed) will fail with a clear error. Use `--switch` to migrate the entire tag history to the new style.
+`gitsem` inspects your existing managed release tags and enforces a consistent prefix style. If your repository already uses `v1.x` tags, passing `1.3.5` (unprefixed) will fail with a clear error. Use `--migrate` to migrate the entire tag history to the new style.
 
 ```sh
 # Migrate from unprefixed to prefixed in one command
-gitsem --switch v1.3.5
+gitsem --migrate v1.3.5
 ```
 
 ### Floating vs exact tags
@@ -122,7 +122,7 @@ gitsem --push --force
 gitsem --dry-run 1.3.4
 
 # Preview a style migration without committing to it
-gitsem --dry-run --switch v1.3.4
+gitsem --dry-run --migrate v1.3.4
 
 # Preview a full push in dry-run mode (remote conflicts are still detected)
 gitsem --dry-run --push 1.3.4
@@ -192,7 +192,7 @@ Example — check the error token in a script:
 ```sh
 output=$(gitsem v1.3.4 2>&1)
 if echo "$output" | grep -q '^error\[style-mismatch\]'; then
-  gitsem --switch v1.3.4
+  gitsem --migrate v1.3.4
 fi
 ```
 

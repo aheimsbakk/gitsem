@@ -87,7 +87,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "Style detection:\n"
             "  gitsem inspects existing managed release tags and enforces a\n"
             "  consistent prefix style (prefixed 'v1.x' or unprefixed '1.x').\n"
-            "  A mismatch fails by default; use --switch to migrate.\n\n"
+            "  A mismatch fails by default; use --migrate to migrate.\n\n"
             "Floating tags:\n"
             "  For 1.3.4 → tags 1, 1.3, and 1.3.4 are all pointed at HEAD.\n"
             "  '1' and '1.3' move automatically; '1.3.4' is pinned.\n"
@@ -114,7 +114,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Allow overwriting conflicting managed tags on the remote (requires --push).",
     )
     parser.add_argument(
-        "--switch",
+        "--migrate",
         action="store_true",
         help=(
             "Migrate all managed release tags to the prefix style of the requested "
@@ -307,8 +307,8 @@ def main(argv: list[str] | None = None) -> None:
                     "version is required unless --push is used "
                     "to sync all managed tags to the remote"
                 )
-            if args.switch:
-                parser.error("--switch requires a version argument")
+            if args.migrate:
+                parser.error("--migrate requires a version argument")
             result = tag_service.sync_all(
                 force=args.force,
                 dry_run=args.dry_run,
@@ -317,7 +317,7 @@ def main(argv: list[str] | None = None) -> None:
         else:
             result = tag_service.apply(
                 args.version,
-                switch=args.switch,
+                migrate=args.migrate,
                 push=args.push,
                 force=args.force,
                 verbose=args.verbose,

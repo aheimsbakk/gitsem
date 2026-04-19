@@ -17,7 +17,7 @@
 - Move floating tags locally when needed
 - Optionally synchronize the same managed tags to `origin` with `--push`
 - Detect existing prefixed versus unprefixed release-tag style and reject mismatches by default
-- Allow style migration with `--switch`, affecting all managed historical version tags
+- Allow style migration with `--migrate`, affecting all managed historical version tags
 - Floating remote tags are moved automatically by `--push` (no `--force` required)
 - Exact remote release tags that conflict require `--force` to overwrite
 - Reject managed annotated tags rather than replacing them
@@ -43,7 +43,7 @@
 - `__main__.py`: `python -m gitsem` entry point
 
 ## CLI surface (implemented)
-- `gitsem [--push] [--force] [--switch] [--dry-run] [-q/--quiet] [--porcelain] [-v/--verbose] <version>`
+- `gitsem [--push] [--force] [--migrate] [--dry-run] [-q/--quiet] [--porcelain] [-v/--verbose] <version>`
 - `gitsem --push [--force] [--dry-run] [-q/--quiet] [--porcelain]`  ← versionless sync-all
 - `-h/--help`, `-V/--version`
 

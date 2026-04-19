@@ -84,9 +84,9 @@ class TestArgParsing(unittest.TestCase):
         kw = self._capture_apply_kwargs(["--force", "1.3.4"])
         self.assertTrue(kw["force"])
 
-    def test_switch_flag(self) -> None:
-        kw = self._capture_apply_kwargs(["--switch", "v1.3.4"])
-        self.assertTrue(kw["switch"])
+    def test_migrate_flag(self) -> None:
+        kw = self._capture_apply_kwargs(["--migrate", "v1.3.4"])
+        self.assertTrue(kw["migrate"])
 
     def test_verbose_flag(self) -> None:
         kw = self._capture_apply_kwargs(["-v", "1.3.4"])
@@ -104,7 +104,7 @@ class TestArgParsing(unittest.TestCase):
         kw = self._capture_apply_kwargs(["1.0.0"])
         self.assertFalse(kw["push"])
         self.assertFalse(kw["force"])
-        self.assertFalse(kw["switch"])
+        self.assertFalse(kw["migrate"])
         self.assertFalse(kw["verbose"])
         self.assertFalse(kw["dry_run"])
 
@@ -438,14 +438,14 @@ class TestVersionlessPush(unittest.TestCase):
         self.assertNotEqual(ctx.exception.code, 0)
 
     # ------------------------------------------------------------------
-    # --switch without a version → parser error
+    # --migrate without a version → parser error
     # ------------------------------------------------------------------
 
-    def test_switch_without_version_exits_nonzero(self) -> None:
+    def test_migrate_without_version_exits_nonzero(self) -> None:
         from gitsem.cli import main
 
         with self.assertRaises(SystemExit) as ctx:
-            main(["--switch", "--push"])
+            main(["--migrate", "--push"])
         self.assertNotEqual(ctx.exception.code, 0)
 
     # ------------------------------------------------------------------
