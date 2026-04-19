@@ -599,5 +599,113 @@ class TestErrorFormat(unittest.TestCase):
         self.assertIn("error[style-mismatch]:", result.stderr)
 
 
+class TestSyncAllIntegration(unittest.TestCase):
+    """Integration tests for `gitsem --push` (no version) using a real bare remote."""
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        root = self._tmpdir.name
+        self.repo = os.path.join(root, "repo")
+        self.remote = os.path.join(root, "remote.git")
+        os.makedirs(self.repo)
+        os.makedirs(self.remote)
+
+        _git(["init", "--bare", "-b", "main"], cwd=self.remote)
+        self.head = _setup_repo(self.repo)
+        _git(["remote", "add", "origin", self.remote], cwd=self.repo)
+        _git(["push", "origin", "main"], cwd=self.repo)
+
+    def tearDown(self) -> None:
+        self._tmpdir.cleanup()
+
+    def _remote_tags(self) -> list[str]:
+        result = _git(["ls-remote", "--tags", "origin"], cwd=self.repo)
+        tags = []
+        for line in result.stdout.splitlines():
+            parts = line.split("\t", 1)
+            if len(parts) == 2:
+                ref = parts[1]
+                if not ref.endswith("^{}") and ref.startswith("refs/tags/"):
+                    tags.append(ref[len("refs/tags/"):])
+        return tags
+
+    def _remote_tag_commit(self, tag: str) -> str:
+        result = _git(["ls-remote", "origin", f"refs/tags/{tag}"], cwd=self.repo)
+        return result.stdout.split("\t")[0].strip() if result.stdout else ""
+
+    def test_local_tags_exist_none_on_remote_synced(self) -> None:
+        """Local tags present, none on remote → all pushed by --push (no version)."""
+        _run_gitsem(["1.3.4"], self.repo)
+        result = _run_gitsem(["--push"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        remote = self._remote_tags()
+        for tag in ("1", "1.3", "1.3.4"):
+            self.assertIn(tag, remote)
+
+    def test_idempotent_all_already_synced(self) -> None:
+        """Running --push again when remote is already up to date exits 0."""
+        _run_gitsem(["--push", "1.3.4"], self.repo)
+        result = _run_gitsem(["--push"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_no_local_managed_tags_no_op(self) -> None:
+        """Repository with no managed tags → exit 0, nothing pushed."""
+        result = _run_gitsem(["--push"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self._remote_tags(), [])
+
+    def test_dry_run_push_no_remote_mutations(self) -> None:
+        """--dry-run --push must not push anything to the remote."""
+        _run_gitsem(["1.3.4"], self.repo)
+        result = _run_gitsem(["--dry-run", "--push"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self._remote_tags(), [])
+
+    def test_porcelain_push_machine_readable(self) -> None:
+        """--porcelain --push emits pushed lines and status ok."""
+        _run_gitsem(["1.3.4"], self.repo)
+        result = _run_gitsem(["--porcelain", "--push"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertIn("pushed 1", lines)
+        self.assertIn("pushed 1.3", lines)
+        self.assertIn("pushed 1.3.4", lines)
+        self.assertTrue(result.stdout.strip().endswith("status ok"))
+
+    def test_exact_tag_conflict_without_force_exits_5(self) -> None:
+        """Remote exact tag at a different commit → exit 5 without --force."""
+        _run_gitsem(["--push", "1.3.4"], self.repo)
+        commit2 = _make_commit(self.repo, "second")
+        _git(["push", "origin", "main"], cwd=self.repo)
+        # Recreate local exact tag on new HEAD.
+        _git(["tag", "-d", "1.3.4"], cwd=self.repo)
+        _git(["tag", "1.3.4"], cwd=self.repo)
+        result = _run_gitsem(["--push"], self.repo)
+        self.assertEqual(result.returncode, 5, result.stderr)
+
+    def test_exact_tag_conflict_repaired_with_force(self) -> None:
+        """Remote exact tag conflict is repaired when --force is supplied."""
+        _run_gitsem(["--push", "1.3.4"], self.repo)
+        commit2 = _make_commit(self.repo, "second")
+        _git(["push", "origin", "main"], cwd=self.repo)
+        _git(["tag", "-d", "1.3.4"], cwd=self.repo)
+        _git(["tag", "1.3.4"], cwd=self.repo)
+        result = _run_gitsem(["--push", "--force"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self._remote_tag_commit("1.3.4"), commit2)
+
+    def test_floating_tag_out_of_sync_moved_without_force(self) -> None:
+        """Floating remote tags out of sync are updated without --force."""
+        _run_gitsem(["--push", "1.3.4"], self.repo)
+        commit2 = _make_commit(self.repo, "next")
+        _git(["push", "origin", "main"], cwd=self.repo)
+        _run_gitsem(["1.3.5"], self.repo)
+        result = _run_gitsem(["--push"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # Floating tag '1' must now point to commit2.
+        self.assertEqual(self._remote_tag_commit("1"), commit2)
+        self.assertEqual(self._remote_tag_commit("1.3"), commit2)
+
+
 if __name__ == "__main__":
     unittest.main()

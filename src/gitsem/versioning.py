@@ -11,6 +11,9 @@ _VERSION_RE = re.compile(r"^(v?)(\d+)\.(\d+)(?:\.(\d+))?$")
 # Pattern that identifies any managed version tag (with or without 'v' prefix).
 _MANAGED_TAG_RE = re.compile(r"^v?\d+(\.\d+(\.\d+)?)?$")
 
+# Matches any managed tag including MAJOR-only (e.g. '1', 'v1', '1.3', 'v1.3.4').
+_TAG_DEPTH_RE = re.compile(r"^(v?)(\d+)(?:\.(\d+)(?:\.(\d+))?)?$")
+
 
 @dataclass(frozen=True)
 class ParsedVersion:
@@ -87,3 +90,40 @@ def switch_tag_prefix(name: str, new_prefix: str) -> str:
     """Return *name* with its prefix replaced by *new_prefix*."""
     bare = name[1:] if name.startswith("v") else name
     return new_prefix + bare
+
+
+def classify_tag_role(name: str, all_managed: dict[str, object]) -> str:
+    """Return 'exact' or 'floating' for a managed tag given the full inventory.
+
+    Classification rules:
+    - MAJOR.MINOR.PATCH → always 'exact'
+    - MAJOR             → always 'floating'
+    - MAJOR.MINOR       → 'floating' if a MAJOR.MINOR.PATCH tag with the same
+                          prefix and same MAJOR.MINOR family exists in
+                          *all_managed*; 'exact' otherwise.
+
+    Cross-prefix isolation: a prefixed tag (e.g. 'v1.3') is never made floating
+    by an unprefixed sibling (e.g. '1.3.4'), and vice versa.
+
+    Raises:
+        ValueError: if *name* is not a recognized managed version tag.
+    """
+    m = _TAG_DEPTH_RE.fullmatch(name)
+    if m is None:
+        raise ValueError(f"{name!r} is not a recognized managed version tag")
+
+    prefix, major, minor, patch = m.group(1), m.group(2), m.group(3), m.group(4)
+
+    if patch is not None:
+        # MAJOR.MINOR.PATCH — always exact.
+        return "exact"
+
+    if minor is None:
+        # MAJOR only — always floating.
+        return "floating"
+
+    # MAJOR.MINOR — floating only if a same-prefix MAJOR.MINOR.PATCH sibling exists.
+    sibling_re = re.compile(
+        rf"^{re.escape(prefix)}{re.escape(major)}\.{re.escape(minor)}\.\d+$"
+    )
+    return "floating" if any(sibling_re.fullmatch(t) for t in all_managed) else "exact"

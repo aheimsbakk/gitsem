@@ -5,6 +5,7 @@ import unittest
 from gitsem.errors import InvalidVersionError
 from gitsem.versioning import (
     ParsedVersion,
+    classify_tag_role,
     derive_managed_tags,
     get_exact_tag,
     get_floating_tags,
@@ -170,6 +171,86 @@ class TestSwitchTagPrefix(unittest.TestCase):
 
     def test_already_same_prefix(self) -> None:
         self.assertEqual(switch_tag_prefix("v1.3", "v"), "v1.3")
+
+
+class TestClassifyTagRole(unittest.TestCase):
+    """classify_tag_role() classifies tags as 'exact' or 'floating'."""
+
+    # Helpers
+    def _inv(self, *names: str) -> dict[str, object]:
+        """Build a minimal managed-tag dict from bare names."""
+        return {n: object() for n in names}
+
+    # ---- MAJOR.MINOR.PATCH is always exact ----
+
+    def test_patch_unprefixed_exact(self) -> None:
+        inv = self._inv("1", "1.3", "1.3.4")
+        self.assertEqual(classify_tag_role("1.3.4", inv), "exact")
+
+    def test_patch_prefixed_exact(self) -> None:
+        inv = self._inv("v1", "v1.3", "v1.3.4")
+        self.assertEqual(classify_tag_role("v1.3.4", inv), "exact")
+
+    def test_patch_zero_exact(self) -> None:
+        inv = self._inv("2", "2.0", "2.0.0")
+        self.assertEqual(classify_tag_role("2.0.0", inv), "exact")
+
+    # ---- MAJOR only is always floating ----
+
+    def test_major_unprefixed_floating(self) -> None:
+        inv = self._inv("1", "1.3", "1.3.4")
+        self.assertEqual(classify_tag_role("1", inv), "floating")
+
+    def test_major_prefixed_floating(self) -> None:
+        inv = self._inv("v1", "v1.3", "v1.3.4")
+        self.assertEqual(classify_tag_role("v1", inv), "floating")
+
+    def test_major_alone_floating(self) -> None:
+        """MAJOR alone with no MINOR siblings is still floating."""
+        inv = self._inv("1")
+        self.assertEqual(classify_tag_role("1", inv), "floating")
+
+    # ---- MAJOR.MINOR — exact when no patch sibling exists ----
+
+    def test_minor_alone_exact(self) -> None:
+        inv = self._inv("1", "1.3")
+        self.assertEqual(classify_tag_role("1.3", inv), "exact")
+
+    def test_minor_prefixed_alone_exact(self) -> None:
+        inv = self._inv("v1", "v1.3")
+        self.assertEqual(classify_tag_role("v1.3", inv), "exact")
+
+    # ---- MAJOR.MINOR — floating when same-prefix patch sibling exists ----
+
+    def test_minor_becomes_floating_with_patch_sibling(self) -> None:
+        inv = self._inv("1", "1.3", "1.3.0")
+        self.assertEqual(classify_tag_role("1.3", inv), "floating")
+
+    def test_minor_prefixed_becomes_floating_with_patch_sibling(self) -> None:
+        inv = self._inv("v1", "v1.3", "v1.3.4")
+        self.assertEqual(classify_tag_role("v1.3", inv), "floating")
+
+    def test_minor_floating_with_multi_patch_siblings(self) -> None:
+        inv = self._inv("1", "1.3", "1.3.0", "1.3.1", "1.3.2")
+        self.assertEqual(classify_tag_role("1.3", inv), "floating")
+
+    # ---- Cross-prefix isolation ----
+
+    def test_cross_prefix_isolation_unprefixed_not_affected_by_prefixed(self) -> None:
+        """Unprefixed '1.3' must NOT be made floating by prefixed 'v1.3.4'."""
+        inv = self._inv("1", "1.3", "v1", "v1.3", "v1.3.4")
+        self.assertEqual(classify_tag_role("1.3", inv), "exact")
+
+    def test_cross_prefix_isolation_prefixed_not_affected_by_unprefixed(self) -> None:
+        """Prefixed 'v1.3' must NOT be made floating by unprefixed '1.3.4'."""
+        inv = self._inv("v1", "v1.3", "1", "1.3", "1.3.4")
+        self.assertEqual(classify_tag_role("v1.3", inv), "exact")
+
+    # ---- Invalid input raises ValueError ----
+
+    def test_invalid_name_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            classify_tag_role("not-a-version", {})
 
 
 if __name__ == "__main__":

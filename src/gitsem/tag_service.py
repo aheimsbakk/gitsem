@@ -334,3 +334,82 @@ def apply(
         _execute_push(parsed, head_commit, force, result, dry_run=dry_run)
 
     return result
+
+
+def sync_all(
+    *,
+    force: bool,
+    dry_run: bool = False,
+    remote: str = "origin",
+) -> ApplyResult:
+    """Synchronize every local managed tag to the remote.
+
+    No local tag creation or movement is performed — this is a pure remote
+    conformance operation.  For each managed local tag the function classifies
+    it as 'exact' or 'floating' using the full local inventory, then applies
+    the same conflict rules as _execute_push:
+
+    - Annotated remote tags are always rejected (even with *force*).
+    - Exact remote tags that differ from the local target require *force*.
+    - Floating remote tags are updated freely (delete-then-push, no *force*).
+    - Tags already in sync on the remote are recorded in remote_skipped.
+
+    When *dry_run* is True the remote is still queried for conflict detection
+    but no pushes or deletes are performed.
+
+    Returns:
+        ApplyResult describing every operation performed (or planned).
+
+    Raises:
+        Any subclass of GitsemError on failure.
+    """
+    result = ApplyResult(dry_run=dry_run)
+
+    # Health check — also returns HEAD commit for reference.
+    head_commit = git_ops.health_check()
+    result.head_commit = head_commit
+
+    # Local inventory.
+    local_tags = git_ops.list_local_tags()
+    managed_tags = _get_managed_subset(local_tags)
+
+    if not managed_tags:
+        return result
+
+    remote_tags = git_ops.list_remote_tags(remote)
+
+    for tag, info in managed_tags.items():
+        local_commit = info.commit
+        role = versioning.classify_tag_role(tag, managed_tags)
+        is_exact = role == "exact"
+
+        if tag in remote_tags:
+            remote_info = remote_tags[tag]
+            if remote_info.commit == local_commit:
+                result.remote_skipped.append(tag)
+                continue
+            # Remote points to a different commit — reject annotated unconditionally.
+            if remote_info.annotated:
+                raise RemoteConflictError(
+                    f"Remote tag {tag!r} is an annotated tag pointing to a different "
+                    "commit. gitsem will not replace annotated remote tags.",
+                    hint="remove the annotated tag on the remote manually, then retry",
+                )
+            # Exact release tags require --force to overwrite.
+            if is_exact and not force:
+                raise RemoteConflictError(
+                    f"Remote exact release tag {tag!r} exists at a different "
+                    f"commit ({remote_info.commit[:8]}).",
+                    hint="rerun with --force to overwrite the conflicting remote tag",
+                )
+            # Floating tags or force=True: delete-then-push.
+            if not dry_run:
+                git_ops.delete_remote_tag(tag, remote)
+                git_ops.push_tag(tag, remote)
+            result.pushed.append(tag)
+        else:
+            if not dry_run:
+                git_ops.push_tag(tag, remote)
+            result.pushed.append(tag)
+
+    return result

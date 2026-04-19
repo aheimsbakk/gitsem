@@ -96,7 +96,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "version",
-        help="Semantic version to tag HEAD with (e.g. 1.3.4 or v1.3.4).",
+        nargs="?",
+        default=None,
+        help=(
+            "Semantic version to tag HEAD with (e.g. 1.3.4 or v1.3.4). "
+            "Omit when using --push alone to sync all local managed tags to the remote."
+        ),
     )
     parser.add_argument(
         "--push",
@@ -161,7 +166,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _print_result(
     result: tag_service.ApplyResult,
-    version_str: str,
+    version_str: str | None,
     *,
     verbose: bool,
     quiet: bool,
@@ -206,7 +211,7 @@ def _print_porcelain(result: tag_service.ApplyResult) -> None:
 
 def _print_human(
     result: tag_service.ApplyResult,
-    version_str: str,
+    version_str: str | None,
     *,
     verbose: bool,
     quiet: bool,
@@ -248,9 +253,15 @@ def _print_human(
     has_skipped = bool(result.skipped or result.remote_skipped)
 
     if not has_mutations and not has_skipped:
-        print(f"Nothing to do for {version_str}.")
+        if version_str is not None:
+            print(f"Nothing to do for {version_str}.")
+        else:
+            print("Nothing to do.")
     elif not has_mutations:
-        print(f"All managed tags for {version_str} are already up to date.")
+        if version_str is not None:
+            print(f"All managed tags for {version_str} are already up to date.")
+        else:
+            print("All managed tags are already up to date.")
     else:
         parts: list[str] = []
         if result.created:
@@ -289,14 +300,30 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     try:
-        result = tag_service.apply(
-            args.version,
-            switch=args.switch,
-            push=args.push,
-            force=args.force,
-            verbose=args.verbose,
-            dry_run=args.dry_run,
-        )
+        if args.version is None:
+            # Versionless path — only valid with --push.
+            if not args.push:
+                parser.error(
+                    "version is required unless --push is used "
+                    "to sync all managed tags to the remote"
+                )
+            if args.switch:
+                parser.error("--switch requires a version argument")
+            result = tag_service.sync_all(
+                force=args.force,
+                dry_run=args.dry_run,
+            )
+            version_str: str | None = None
+        else:
+            result = tag_service.apply(
+                args.version,
+                switch=args.switch,
+                push=args.push,
+                force=args.force,
+                verbose=args.verbose,
+                dry_run=args.dry_run,
+            )
+            version_str = args.version
     except GitsemError as exc:
         _err(exc)
         sys.exit(exc.exit_code)
@@ -309,7 +336,7 @@ def main(argv: list[str] | None = None) -> None:
 
     _print_result(
         result,
-        args.version,
+        version_str,
         verbose=args.verbose,
         quiet=args.quiet,
         porcelain=args.porcelain,

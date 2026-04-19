@@ -3,11 +3,9 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from gitsem.errors import StyleMismatchError, TagConflictError
+from gitsem.errors import RemoteConflictError, StyleMismatchError, TagConflictError
 from gitsem.git_ops import TagInfo
 from gitsem.tag_service import detect_style
-
-
 class TestDetectStyle(unittest.TestCase):
     """detect_style() infers prefix style from managed tag dict."""
 
@@ -418,6 +416,248 @@ class TestDryRunPush(unittest.TestCase):
                 "1.3.5", switch=False, push=True, force=False, verbose=False, dry_run=True
             )
         mock_push.assert_not_called()
+
+
+class TestSyncAll(unittest.TestCase):
+    """sync_all() synchronises every local managed tag to the remote."""
+
+    _HEAD = "a" * 40
+    _OLD  = "b" * 40
+
+    def _ti(self, commit: str = "a" * 40, annotated: bool = False) -> TagInfo:
+        return TagInfo(commit=commit, annotated=annotated)
+
+    # ------------------------------------------------------------------
+    # All remote tags missing → all pushed
+    # ------------------------------------------------------------------
+
+    @patch("gitsem.tag_service.git_ops.push_tag")
+    @patch("gitsem.tag_service.git_ops.list_remote_tags", return_value={})
+    @patch("gitsem.tag_service.git_ops.list_local_tags")
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="a" * 40)
+    def test_all_missing_on_remote_pushed(
+        self,
+        mock_health: MagicMock,
+        mock_local: MagicMock,
+        mock_remote: MagicMock,
+        mock_push: MagicMock,
+    ) -> None:
+        mock_local.return_value = {
+            "1": self._ti(), "1.3": self._ti(), "1.3.4": self._ti(),
+        }
+        from gitsem.tag_service import sync_all
+
+        result = sync_all(force=False)
+        self.assertEqual(sorted(result.pushed), ["1", "1.3", "1.3.4"])
+        self.assertEqual(result.remote_skipped, [])
+        self.assertEqual(mock_push.call_count, 3)
+
+    # ------------------------------------------------------------------
+    # All remote tags already at correct commits → all remote_skipped
+    # ------------------------------------------------------------------
+
+    @patch("gitsem.tag_service.git_ops.push_tag")
+    @patch("gitsem.tag_service.git_ops.list_remote_tags")
+    @patch("gitsem.tag_service.git_ops.list_local_tags")
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="a" * 40)
+    def test_all_in_sync_remote_skipped(
+        self,
+        mock_health: MagicMock,
+        mock_local: MagicMock,
+        mock_remote: MagicMock,
+        mock_push: MagicMock,
+    ) -> None:
+        mock_local.return_value = {
+            "1": self._ti(), "1.3": self._ti(), "1.3.4": self._ti(),
+        }
+        mock_remote.return_value = {
+            "1": self._ti(), "1.3": self._ti(), "1.3.4": self._ti(),
+        }
+        from gitsem.tag_service import sync_all
+
+        result = sync_all(force=False)
+        self.assertEqual(sorted(result.remote_skipped), ["1", "1.3", "1.3.4"])
+        mock_push.assert_not_called()
+
+    # ------------------------------------------------------------------
+    # Exact remote tag conflict without --force → RemoteConflictError
+    # ------------------------------------------------------------------
+
+    @patch("gitsem.tag_service.git_ops.push_tag")
+    @patch("gitsem.tag_service.git_ops.list_remote_tags")
+    @patch("gitsem.tag_service.git_ops.list_local_tags")
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="a" * 40)
+    def test_exact_conflict_without_force_raises(
+        self,
+        mock_health: MagicMock,
+        mock_local: MagicMock,
+        mock_remote: MagicMock,
+        mock_push: MagicMock,
+    ) -> None:
+        mock_local.return_value = {
+            "1": self._ti(), "1.3": self._ti(), "1.3.4": self._ti(),
+        }
+        mock_remote.return_value = {
+            "1":   self._ti(),             # floating — already in sync
+            "1.3": self._ti(),             # floating — already in sync
+            "1.3.4": self._ti(commit=self._OLD),  # exact tag at different commit
+        }
+        from gitsem.tag_service import sync_all
+
+        with self.assertRaises(RemoteConflictError):
+            sync_all(force=False)
+
+    # ------------------------------------------------------------------
+    # Exact remote tag conflict with --force → pushed
+    # ------------------------------------------------------------------
+
+    @patch("gitsem.tag_service.git_ops.push_tag")
+    @patch("gitsem.tag_service.git_ops.delete_remote_tag")
+    @patch("gitsem.tag_service.git_ops.list_remote_tags")
+    @patch("gitsem.tag_service.git_ops.list_local_tags")
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="a" * 40)
+    def test_exact_conflict_with_force_pushed(
+        self,
+        mock_health: MagicMock,
+        mock_local: MagicMock,
+        mock_remote: MagicMock,
+        mock_delete: MagicMock,
+        mock_push: MagicMock,
+    ) -> None:
+        mock_local.return_value = {
+            "1": self._ti(), "1.3": self._ti(), "1.3.4": self._ti(),
+        }
+        mock_remote.return_value = {
+            "1.3.4": self._ti(commit=self._OLD),
+        }
+        from gitsem.tag_service import sync_all
+
+        result = sync_all(force=True)
+        self.assertIn("1.3.4", result.pushed)
+
+    # ------------------------------------------------------------------
+    # Floating remote tag at different commit → pushed without --force
+    # ------------------------------------------------------------------
+
+    @patch("gitsem.tag_service.git_ops.push_tag")
+    @patch("gitsem.tag_service.git_ops.delete_remote_tag")
+    @patch("gitsem.tag_service.git_ops.list_remote_tags")
+    @patch("gitsem.tag_service.git_ops.list_local_tags")
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="a" * 40)
+    def test_floating_out_of_sync_pushed_without_force(
+        self,
+        mock_health: MagicMock,
+        mock_local: MagicMock,
+        mock_remote: MagicMock,
+        mock_delete: MagicMock,
+        mock_push: MagicMock,
+    ) -> None:
+        mock_local.return_value = {
+            "1": self._ti(), "1.3": self._ti(), "1.3.4": self._ti(),
+        }
+        mock_remote.return_value = {
+            "1":   self._ti(commit=self._OLD),  # floating — out of sync
+            "1.3": self._ti(commit=self._OLD),  # floating — out of sync
+        }
+        from gitsem.tag_service import sync_all
+
+        result = sync_all(force=False)
+        # Floating tags moved, exact tag pushed (was absent on remote).
+        self.assertIn("1", result.pushed)
+        self.assertIn("1.3", result.pushed)
+        self.assertIn("1.3.4", result.pushed)
+
+    # ------------------------------------------------------------------
+    # dry_run=True → no actual pushes; result.pushed still populated
+    # ------------------------------------------------------------------
+
+    @patch("gitsem.tag_service.git_ops.push_tag")
+    @patch("gitsem.tag_service.git_ops.delete_remote_tag")
+    @patch("gitsem.tag_service.git_ops.list_remote_tags", return_value={})
+    @patch("gitsem.tag_service.git_ops.list_local_tags")
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="a" * 40)
+    def test_dry_run_no_actual_push(
+        self,
+        mock_health: MagicMock,
+        mock_local: MagicMock,
+        mock_remote: MagicMock,
+        mock_delete: MagicMock,
+        mock_push: MagicMock,
+    ) -> None:
+        mock_local.return_value = {
+            "1": self._ti(), "1.3": self._ti(), "1.3.4": self._ti(),
+        }
+        from gitsem.tag_service import sync_all
+
+        result = sync_all(force=False, dry_run=True)
+        mock_push.assert_not_called()
+        mock_delete.assert_not_called()
+        self.assertEqual(sorted(result.pushed), ["1", "1.3", "1.3.4"])
+        self.assertTrue(result.dry_run)
+
+    # ------------------------------------------------------------------
+    # Empty local managed tags → empty result, no error
+    # ------------------------------------------------------------------
+
+    @patch("gitsem.tag_service.git_ops.list_local_tags", return_value={})
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="a" * 40)
+    def test_empty_local_tags_no_error(
+        self,
+        mock_health: MagicMock,
+        mock_local: MagicMock,
+    ) -> None:
+        from gitsem.tag_service import sync_all
+
+        result = sync_all(force=False)
+        self.assertEqual(result.pushed, [])
+        self.assertEqual(result.remote_skipped, [])
+
+    # ------------------------------------------------------------------
+    # Annotated remote tag → RemoteConflictError
+    # ------------------------------------------------------------------
+
+    @patch("gitsem.tag_service.git_ops.push_tag")
+    @patch("gitsem.tag_service.git_ops.list_remote_tags")
+    @patch("gitsem.tag_service.git_ops.list_local_tags")
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="a" * 40)
+    def test_annotated_remote_raises(
+        self,
+        mock_health: MagicMock,
+        mock_local: MagicMock,
+        mock_remote: MagicMock,
+        mock_push: MagicMock,
+    ) -> None:
+        mock_local.return_value = {
+            "1": self._ti(), "1.3": self._ti(), "1.3.4": self._ti(),
+        }
+        mock_remote.return_value = {
+            "1":   self._ti(),             # floating — in sync
+            "1.3": self._ti(),             # floating — in sync
+            "1.3.4": self._ti(commit=self._OLD, annotated=True),  # annotated, different commit
+        }
+        from gitsem.tag_service import sync_all
+
+        with self.assertRaises(RemoteConflictError):
+            sync_all(force=True)  # force does not override annotated rejection
+        mock_push.assert_not_called()
+
+    # ------------------------------------------------------------------
+    # head_commit populated from health_check
+    # ------------------------------------------------------------------
+
+    @patch("gitsem.tag_service.git_ops.list_remote_tags", return_value={})
+    @patch("gitsem.tag_service.git_ops.list_local_tags", return_value={})
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="c" * 40)
+    def test_head_commit_set(
+        self,
+        mock_health: MagicMock,
+        mock_local: MagicMock,
+        mock_remote: MagicMock,
+    ) -> None:
+        from gitsem.tag_service import sync_all
+
+        result = sync_all(force=False)
+        self.assertEqual(result.head_commit, "c" * 40)
 
 
 if __name__ == "__main__":

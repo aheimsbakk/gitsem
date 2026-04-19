@@ -99,12 +99,19 @@ Initial implementation should use lightweight Git tags because they behave as si
 ## 5. Remote synchronization
 `--push` enables remote synchronization after local tags are correct.
 
-When `--push` is used, gitsem must:
+When `--push` is used **with a version**, gitsem must:
 - push the managed tags to the remote repository
 - make the remote tag positions comply with the local tag positions
 - update moved floating tags remotely as well as locally
 - remain idempotent when local and remote tag state already match
 - fail with a non-zero exit code if remote synchronization does not complete successfully
+
+When `--push` is used **without a version**, gitsem performs a **full sync** of every local managed tag to the remote (`sync_all`):
+- no local tags are created, moved, or deleted — pure remote conformance
+- each local managed tag is classified as 'exact' or 'floating' from the full local inventory
+- a `MAJOR.MINOR.PATCH` tag is always 'exact'; a `MAJOR` tag is always 'floating'; a `MAJOR.MINOR` tag is 'floating' if a same-prefix `MAJOR.MINOR.PATCH` sibling exists locally, 'exact' otherwise
+- the same conflict rules apply as for version-scoped push (see below)
+- `--switch` is meaningless without a version and must be rejected with a usage error
 
 Initial remote scope:
 - target the `origin` remote
@@ -125,13 +132,15 @@ Planned CLI surface for the first version:
 
 ```text
 gitsem [--push] [--force] [--switch] [--verbose] <version>
+gitsem --push [--force] [--dry-run] [-q] [--porcelain]
 gitsem --help
 gitsem --version
 ```
 
 Input rules:
-- `<version>` is required
-- accepted forms are `1.3`, `1.3.4`, `v1.3`, and `v1.3.4`
+- `<version>` is required when tagging HEAD; accepted forms are `1.3`, `1.3.4`, `v1.3`, and `v1.3.4`
+- `<version>` may be omitted when `--push` is used alone (triggers `sync_all`)
+- `--switch` requires a `<version>` argument; using it without a version is a usage error
 - prerelease and build metadata are out of scope for the first version
 
 Flags:

@@ -10,7 +10,8 @@ Docker-style floating semantic-version tags for Git repositories.
 gitsem 1.3.4         → tags  1,  1.3,  1.3.4  all pointing to HEAD
 gitsem v1.3.4        → tags v1, v1.3, v1.3.4  all pointing to HEAD
 gitsem 1.3           → tags  1,  1.3           all pointing to HEAD
-gitsem --push 1.3.4  → same as above, then syncs to origin
+gitsem --push 1.3.4  → same as above, then syncs those tags to origin
+gitsem --push        → syncs ALL local managed tags to origin
 ```
 
 ## Requirements
@@ -51,6 +52,7 @@ uv run gitsem 1.3.4
 
 ```
 gitsem [--push] [--force] [--switch] [--dry-run] [-q] [--porcelain] [-v] <version>
+gitsem --push [--force] [--dry-run] [-q] [--porcelain]
 gitsem --help
 gitsem --version
 ```
@@ -59,8 +61,8 @@ gitsem --version
 
 | Argument | Description |
 |---|---|
-| `<version>` | Required. Accepted forms: `1.3`, `v1.3`, `1.3.4`, `v1.3.4` |
-| `--push` | Synchronize managed tags to `origin` after local tagging |
+| `<version>` | Semantic version to tag HEAD with. Required unless `--push` is used alone. Accepted forms: `1.3`, `v1.3`, `1.3.4`, `v1.3.4` |
+| `--push` | Synchronize managed tags to `origin`. When used **without a version**, syncs every local managed tag to the remote (see [Sync all](#sync-all)). When used **with a version**, syncs only the managed tags for that version |
 | `--force` | Allow overwriting conflicting exact release tags on the remote (requires `--push`) |
 | `--switch` | Migrate all managed release tags to the prefix style of the requested version |
 | `--dry-run` | Validate and plan all operations without making any mutations |
@@ -91,6 +93,25 @@ Floating tags are always moved to the latest release. Exact release tags are pin
 ### Remote synchronization
 
 `--push` uses delete-then-push to keep remote floating tags aligned. Floating remote tags are updated automatically; conflicting exact remote release tags require `--force`.
+
+#### Sync all
+
+`gitsem --push` (with no version argument) synchronizes **every** local managed tag to the remote in a single command. No local tag creation or movement is performed — it is a pure remote conformance operation. Each tag is classified as floating or exact from the local inventory and the same conflict rules apply:
+
+- floating remote tags are moved freely (no `--force` required)
+- exact release tags that conflict on the remote require `--force`
+- annotated remote tags are always rejected
+
+```sh
+# Sync all local managed tags to origin
+gitsem --push
+
+# Preview what would be pushed (remote conflicts still detected)
+gitsem --dry-run --push
+
+# Repair a conflicting exact remote tag and sync everything
+gitsem --push --force
+```
 
 ### Dry-run mode
 

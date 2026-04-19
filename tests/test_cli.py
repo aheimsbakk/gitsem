@@ -400,5 +400,136 @@ class TestDryRunOutput(unittest.TestCase):
         self.assertIn("would be moved", output)
 
 
+class TestVersionlessPush(unittest.TestCase):
+    """gitsem --push (no version) routes to sync_all(); argument validation."""
+
+    # ------------------------------------------------------------------
+    # Routing: --push with no version calls sync_all, not apply
+    # ------------------------------------------------------------------
+
+    def test_push_no_version_routes_to_sync_all(self) -> None:
+        from gitsem.cli import main
+        from gitsem.tag_service import ApplyResult
+
+        captured: dict = {}
+
+        def fake_sync_all(**kwargs: object) -> ApplyResult:
+            captured.update(kwargs)
+            return ApplyResult()
+
+        with patch("gitsem.tag_service.sync_all", side_effect=fake_sync_all):
+            with patch("gitsem.tag_service.apply") as mock_apply:
+                with self.assertRaises(SystemExit) as ctx:
+                    main(["--push"])
+        mock_apply.assert_not_called()
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertIn("force", captured)
+        self.assertIn("dry_run", captured)
+
+    # ------------------------------------------------------------------
+    # No version, no --push → parser error (non-zero exit)
+    # ------------------------------------------------------------------
+
+    def test_no_version_no_push_exits_nonzero(self) -> None:
+        from gitsem.cli import main
+
+        with self.assertRaises(SystemExit) as ctx:
+            main([])
+        self.assertNotEqual(ctx.exception.code, 0)
+
+    # ------------------------------------------------------------------
+    # --switch without a version → parser error
+    # ------------------------------------------------------------------
+
+    def test_switch_without_version_exits_nonzero(self) -> None:
+        from gitsem.cli import main
+
+        with self.assertRaises(SystemExit) as ctx:
+            main(["--switch", "--push"])
+        self.assertNotEqual(ctx.exception.code, 0)
+
+    # ------------------------------------------------------------------
+    # --dry-run forwarded to sync_all
+    # ------------------------------------------------------------------
+
+    def test_dry_run_forwarded_to_sync_all(self) -> None:
+        from gitsem.cli import main
+        from gitsem.tag_service import ApplyResult
+
+        captured: dict = {}
+
+        def fake_sync_all(**kwargs: object) -> ApplyResult:
+            captured.update(kwargs)
+            return ApplyResult()
+
+        with patch("gitsem.tag_service.sync_all", side_effect=fake_sync_all):
+            with self.assertRaises(SystemExit):
+                main(["--push", "--dry-run"])
+        self.assertTrue(captured.get("dry_run"))
+
+    # ------------------------------------------------------------------
+    # --force forwarded to sync_all
+    # ------------------------------------------------------------------
+
+    def test_force_forwarded_to_sync_all(self) -> None:
+        from gitsem.cli import main
+        from gitsem.tag_service import ApplyResult
+
+        captured: dict = {}
+
+        def fake_sync_all(**kwargs: object) -> ApplyResult:
+            captured.update(kwargs)
+            return ApplyResult()
+
+        with patch("gitsem.tag_service.sync_all", side_effect=fake_sync_all):
+            with self.assertRaises(SystemExit):
+                main(["--push", "--force"])
+        self.assertTrue(captured.get("force"))
+
+    # ------------------------------------------------------------------
+    # _print_result called with version_str=None (no-op message)
+    # ------------------------------------------------------------------
+
+    def test_print_result_none_version_str_nothing_to_do(self) -> None:
+        from gitsem.cli import main
+        from gitsem.tag_service import ApplyResult
+        from io import StringIO
+
+        buf = StringIO()
+        with patch("gitsem.tag_service.sync_all", return_value=ApplyResult()):
+            with patch("sys.stdout", buf):
+                with self.assertRaises(SystemExit):
+                    main(["--push"])
+        self.assertIn("Nothing to do.", buf.getvalue())
+
+    def test_print_result_none_version_str_up_to_date(self) -> None:
+        from gitsem.cli import main
+        from gitsem.tag_service import ApplyResult
+        from io import StringIO
+
+        buf = StringIO()
+        result = ApplyResult(remote_skipped=["1", "1.3", "1.3.4"])
+        with patch("gitsem.tag_service.sync_all", return_value=result):
+            with patch("sys.stdout", buf):
+                with self.assertRaises(SystemExit):
+                    main(["--push"])
+        self.assertIn("All managed tags are already up to date.", buf.getvalue())
+
+    # ------------------------------------------------------------------
+    # Existing versioned --push still calls apply (backward compat)
+    # ------------------------------------------------------------------
+
+    def test_versioned_push_still_calls_apply(self) -> None:
+        from gitsem.cli import main
+        from gitsem.tag_service import ApplyResult
+
+        with patch("gitsem.tag_service.apply", return_value=ApplyResult()) as mock_apply:
+            with patch("gitsem.tag_service.sync_all") as mock_sync:
+                with self.assertRaises(SystemExit):
+                    main(["--push", "1.3.4"])
+        mock_apply.assert_called_once()
+        mock_sync.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

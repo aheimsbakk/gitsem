@@ -1,8 +1,8 @@
 # CONTEXT: gitsem
 
 ## Current project state
-- v0.2.0 — full implementation complete; 123 tests passing
-- Agent-usability improvements complete (not yet bumped to 0.3.0; pending wrap-up)
+- v0.3.0 — full implementation complete; 162 tests passing
+- `sync_all` / versionless `--push` feature implemented (pending wrap-up to v0.4.0)
 - Source under `src/gitsem/`, tests under `tests/`
 - Runnable via `uvx --from git+https://github.com/aheimsbakk/gitsem gitsem`
 
@@ -35,15 +35,16 @@
 
 ## Module responsibilities (implemented)
 - `errors.py`: typed domain errors with explicit exit codes (1–7); each error has a `token: str` class attribute and accepts `hint: str | None` keyword arg
-- `versioning.py`: parse/validate version string, derive managed tag names, prefix helpers
+- `versioning.py`: parse/validate version string, derive managed tag names, prefix helpers, `classify_tag_role()` for floating/exact classification from full local inventory
 - `git_ops.py`: `subprocess.run`-based Git calls with timeouts; local and remote tag CRUD; detached-HEAD error carries a hint
-- `tag_service.py`: orchestration — health check, style detection, switch migration, local tagging, remote sync; `ApplyResult` carries `head_commit` and `dry_run` fields; all execution helpers accept `dry_run: bool = False`
-- `cli.py`: `argparse`-based argument parsing, result formatting, exception-to-exit-code mapping; see CLI surface below
+- `tag_service.py`: orchestration — health check, style detection, switch migration, local tagging, remote sync; `ApplyResult` carries `head_commit` and `dry_run` fields; all execution helpers accept `dry_run: bool = False`; `sync_all()` synchronizes every local managed tag to remote without local mutations
+- `cli.py`: `argparse`-based argument parsing, result formatting, exception-to-exit-code mapping; `version` is `nargs="?"` (optional); versionless `--push` routes to `sync_all()`; `_print_result`/`_print_human` accept `version_str: str | None`
 - `__init__.py`: `importlib.metadata` version resolution
 - `__main__.py`: `python -m gitsem` entry point
 
 ## CLI surface (implemented)
 - `gitsem [--push] [--force] [--switch] [--dry-run] [-q/--quiet] [--porcelain] [-v/--verbose] <version>`
+- `gitsem --push [--force] [--dry-run] [-q/--quiet] [--porcelain]`  ← versionless sync-all
 - `-h/--help`, `-V/--version`
 
 ## Output modes
@@ -94,6 +95,13 @@
 - Floating remote tags are moved freely by `--push` (delete-then-push without `--force`)
 - Only exact remote release tags require `--force` to overwrite
 - Annotated remote tags are always rejected, even with `--force`
+- `gitsem --push` (no version) calls `sync_all()`: classifies every local managed tag via `versioning.classify_tag_role()` and applies same push rules to all
+
+## Tag classification (floating vs exact from inventory alone)
+- `MAJOR.MINOR.PATCH` → always exact
+- `MAJOR` → always floating
+- `MAJOR.MINOR` → floating if a same-prefix `MAJOR.MINOR.PATCH` sibling exists locally; exact otherwise
+- Cross-prefix isolation: `v1.3` is not made floating by unprefixed `1.3.4`
 
 ## Open decisions for later implementation
 - configurable remote beyond `origin`
