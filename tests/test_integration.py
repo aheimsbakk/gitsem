@@ -707,5 +707,227 @@ class TestSyncAllIntegration(unittest.TestCase):
         self.assertEqual(self._remote_tag_commit("1.3"), commit2)
 
 
+class TestRepairFloating(unittest.TestCase):
+    """Integration tests for `gitsem --repair`."""
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.repo = self._tmpdir.name
+        self.head = _setup_repo(self.repo)
+
+    def tearDown(self) -> None:
+        self._tmpdir.cleanup()
+
+    # ------------------------------------------------------------------
+    # Creates missing floating tags from exact-tag inventory
+    # ------------------------------------------------------------------
+
+    def test_repair_creates_missing_floating_tags(self) -> None:
+        # Create exact tags only, no floating tags.
+        _git(["tag", "1.3.4", self.head], cwd=self.repo)
+        result = _run_gitsem(["--repair"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tags = _list_tags(self.repo)
+        self.assertIn("1", tags)
+        self.assertIn("1.3", tags)
+        # Exact tag untouched.
+        self.assertIn("1.3.4", tags)
+        self.assertEqual(_get_tag_commit(self.repo, "1"), self.head)
+        self.assertEqual(_get_tag_commit(self.repo, "1.3"), self.head)
+
+    def test_repair_creates_major_float_for_minor_only_repo(self) -> None:
+        """In a MAJOR.MINOR repo, only the MAJOR float should be created."""
+        _git(["tag", "1.3"], cwd=self.repo)
+        result = _run_gitsem(["--repair"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tags = _list_tags(self.repo)
+        self.assertIn("1", tags)
+        # 1.3 is exact — must not appear as a floating target
+        self.assertEqual(_get_tag_commit(self.repo, "1"), self.head)
+
+    # ------------------------------------------------------------------
+    # Fixes floating tags that point to the wrong commit
+    # ------------------------------------------------------------------
+
+    def test_repair_fixes_floating_tag_order(self) -> None:
+        # Release 1.3.4 on commit1, then 1.3.5 on commit2.
+        commit1 = self.head
+        _git(["tag", "1.3.4", commit1], cwd=self.repo)
+        _git(["tag", "1.3", commit1], cwd=self.repo)
+        _git(["tag", "1", commit1], cwd=self.repo)
+        commit2 = _make_commit(self.repo, "release 1.3.5")
+        _git(["tag", "1.3.5", commit2], cwd=self.repo)
+        # At this point '1' and '1.3' still point to commit1 — stale.
+
+        result = _run_gitsem(["--repair"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # After repair, floating tags must point to 1.3.5's commit.
+        self.assertEqual(_get_tag_commit(self.repo, "1"), commit2)
+        self.assertEqual(_get_tag_commit(self.repo, "1.3"), commit2)
+        # Exact tags must be untouched.
+        self.assertEqual(_get_tag_commit(self.repo, "1.3.4"), commit1)
+        self.assertEqual(_get_tag_commit(self.repo, "1.3.5"), commit2)
+
+    def test_repair_fixes_major_float_across_minor_families(self) -> None:
+        """MAJOR float must point to the newest minor line, not a lower one."""
+        commit1 = self.head
+        _git(["tag", "1.2.3", commit1], cwd=self.repo)
+        _git(["tag", "1.2", commit1], cwd=self.repo)
+        _git(["tag", "1", commit1], cwd=self.repo)
+        commit2 = _make_commit(self.repo, "release 1.3.0")
+        _git(["tag", "1.3.0", commit2], cwd=self.repo)
+        _git(["tag", "1.3", commit2], cwd=self.repo)
+        # '1' still points to commit1 (1.2.x era).
+
+        result = _run_gitsem(["--repair"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(_get_tag_commit(self.repo, "1"), commit2)
+
+    # ------------------------------------------------------------------
+    # Idempotent — no-op when already correct
+    # ------------------------------------------------------------------
+
+    def test_repair_idempotent(self) -> None:
+        _run_gitsem(["1.3.4"], self.repo)
+        result = _run_gitsem(["--repair"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # No error and tags still correct.
+        self.assertEqual(_get_tag_commit(self.repo, "1"), self.head)
+        self.assertEqual(_get_tag_commit(self.repo, "1.3"), self.head)
+
+    # ------------------------------------------------------------------
+    # Prefixed repo — autodetects 'v' style
+    # ------------------------------------------------------------------
+
+    def test_repair_respects_v_prefix(self) -> None:
+        _git(["tag", "v1.3.4", self.head], cwd=self.repo)
+        result = _run_gitsem(["--repair"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tags = _list_tags(self.repo)
+        self.assertIn("v1", tags)
+        self.assertIn("v1.3", tags)
+        self.assertNotIn("1", tags)
+        self.assertNotIn("1.3", tags)
+
+    # ------------------------------------------------------------------
+    # --dry-run → no mutations
+    # ------------------------------------------------------------------
+
+    def test_repair_dry_run_creates_no_tags(self) -> None:
+        _git(["tag", "1.3.4", self.head], cwd=self.repo)
+        result = _run_gitsem(["--repair", "--dry-run"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tags = _list_tags(self.repo)
+        self.assertNotIn("1", tags)
+        self.assertNotIn("1.3", tags)
+        self.assertIn("would", result.stdout)
+
+    # ------------------------------------------------------------------
+    # Invalid combinations exit with usage error
+    # ------------------------------------------------------------------
+
+    def test_repair_with_version_exits_nonzero(self) -> None:
+        result = _run_gitsem(["--repair", "1.3.4"], self.repo)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_repair_with_migrate_exits_nonzero(self) -> None:
+        result = _run_gitsem(["--repair", "--migrate"], self.repo)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_repair_with_force_exits_nonzero(self) -> None:
+        result = _run_gitsem(["--repair", "--force"], self.repo)
+        self.assertNotEqual(result.returncode, 0)
+
+    # ------------------------------------------------------------------
+    # Empty repo (no managed tags) → exit 0, nothing to do
+    # ------------------------------------------------------------------
+
+    def test_repair_empty_repo_no_op(self) -> None:
+        result = _run_gitsem(["--repair"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    # ------------------------------------------------------------------
+    # --porcelain output
+    # ------------------------------------------------------------------
+
+    def test_repair_porcelain_output(self) -> None:
+        _git(["tag", "1.3.4", self.head], cwd=self.repo)
+        result = _run_gitsem(["--repair", "--porcelain"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("created 1", result.stdout.splitlines())
+        self.assertIn("created 1.3", result.stdout.splitlines())
+        self.assertTrue(result.stdout.strip().endswith("status ok"))
+
+
+class TestRepairFloatingWithPush(unittest.TestCase):
+    """Integration tests for `gitsem --repair --push`."""
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        root = self._tmpdir.name
+        self.repo = os.path.join(root, "repo")
+        self.remote = os.path.join(root, "remote.git")
+        os.makedirs(self.repo)
+        os.makedirs(self.remote)
+
+        _git(["init", "--bare", "-b", "main"], cwd=self.remote)
+        self.head = _setup_repo(self.repo)
+        _git(["remote", "add", "origin", self.remote], cwd=self.repo)
+        _git(["push", "origin", "main"], cwd=self.repo)
+
+    def tearDown(self) -> None:
+        self._tmpdir.cleanup()
+
+    def _remote_tags(self) -> list[str]:
+        result = _git(["ls-remote", "--tags", "origin"], cwd=self.repo)
+        tags = []
+        for line in result.stdout.splitlines():
+            parts = line.split("\t", 1)
+            if len(parts) == 2:
+                ref = parts[1]
+                if not ref.endswith("^{}") and ref.startswith("refs/tags/"):
+                    tags.append(ref[len("refs/tags/"):])
+        return tags
+
+    def _remote_tag_commit(self, tag: str) -> str:
+        result = _git(["ls-remote", "origin", f"refs/tags/{tag}"], cwd=self.repo)
+        return result.stdout.split("\t")[0].strip() if result.stdout else ""
+
+    def test_repair_push_pushes_floating_tags_to_remote(self) -> None:
+        _git(["tag", "1.3.4", self.head], cwd=self.repo)
+        result = _run_gitsem(["--repair", "--push"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        remote = self._remote_tags()
+        self.assertIn("1", remote)
+        self.assertIn("1.3", remote)
+        # Exact tag not pushed (--repair only manages floating tags remotely).
+        self.assertNotIn("1.3.4", remote)
+
+    def test_repair_push_moves_stale_remote_float(self) -> None:
+        """Stale remote floating tags are moved without --force."""
+        commit1 = self.head
+        _git(["tag", "1.3.4", commit1], cwd=self.repo)
+        _git(["tag", "1.3", commit1], cwd=self.repo)
+        _git(["tag", "1", commit1], cwd=self.repo)
+        # Push current state to remote.
+        _git(["push", "origin", "refs/tags/1.3.4", "refs/tags/1.3", "refs/tags/1"],
+             cwd=self.repo)
+        # Now add 1.3.5 on a new commit — floats are stale.
+        commit2 = _make_commit(self.repo, "release 1.3.5")
+        _git(["push", "origin", "main"], cwd=self.repo)
+        _git(["tag", "1.3.5", commit2], cwd=self.repo)
+
+        result = _run_gitsem(["--repair", "--push"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self._remote_tag_commit("1"), commit2)
+        self.assertEqual(self._remote_tag_commit("1.3"), commit2)
+
+    def test_repair_push_dry_run_no_remote_mutations(self) -> None:
+        _git(["tag", "1.3.4", self.head], cwd=self.repo)
+        result = _run_gitsem(["--repair", "--push", "--dry-run"], self.repo)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self._remote_tags(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -133,6 +133,7 @@ Planned CLI surface for the first version:
 ```text
 gitsem [--push] [--force] [--migrate] [--verbose] <version>
 gitsem --push [--force] [--dry-run] [-q] [--porcelain]
+gitsem --repair [--push] [--dry-run] [-q] [--porcelain] [-v]
 gitsem --help
 gitsem --version
 ```
@@ -146,7 +147,14 @@ Input rules:
 Flags:
 - `--push`: synchronize managed tags to `origin`
 - `--force`: allow repair of conflicting managed remote tags
-  - `--migrate`: migrate managed release tags to the requested prefix style
+- `--migrate`: migrate managed release tags to the requested prefix style
+- `--repair`: reconcile floating tags across the whole repository without tagging HEAD
+  - derives the correct target commit for every floating tag from the existing exact-tag inventory
+  - creates missing floating tags and moves misplaced floating tags to the correct commit
+  - never mutates exact tags
+  - mutually exclusive with `<version>`, `--migrate`, and `--force`
+  - combinable with `--push` (pushes only floating tags; no `--force` required), `--dry-run`, `-q`, `--porcelain`, `-v`
+  - autodetects prefix style; rejects mixed-style repositories (same `TagConflictError` as normal tagging)
 - `-v`, `--verbose`: emit more detailed operational output
 - `-h`, `--help`: show usage
 - `-V`, `--version`: show the application version

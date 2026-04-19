@@ -6,6 +6,7 @@ from gitsem.errors import InvalidVersionError
 from gitsem.versioning import (
     ParsedVersion,
     classify_tag_role,
+    compute_floating_tag_targets,
     derive_managed_tags,
     get_exact_tag,
     get_floating_tags,
@@ -251,6 +252,171 @@ class TestClassifyTagRole(unittest.TestCase):
     def test_invalid_name_raises(self) -> None:
         with self.assertRaises(ValueError):
             classify_tag_role("not-a-version", {})
+
+
+class TestComputeFloatingTagTargets(unittest.TestCase):
+    """compute_floating_tag_targets() computes the correct floating tag → commit map."""
+
+    # ------------------------------------------------------------------
+    # Edge cases
+    # ------------------------------------------------------------------
+
+    def test_empty_inventory_returns_empty(self) -> None:
+        self.assertEqual(compute_floating_tag_targets({}), {})
+
+    def test_only_major_floating_tag_no_exact(self) -> None:
+        """A MAJOR-only inventory has no exact tags → nothing to derive from."""
+        self.assertEqual(compute_floating_tag_targets({"1": "aaa"}), {})
+
+    # ------------------------------------------------------------------
+    # Single patch release (full inventory including existing floats)
+    # ------------------------------------------------------------------
+
+    def test_single_patch_release_creates_two_floats(self) -> None:
+        targets = compute_floating_tag_targets(
+            {"1": "aaa", "1.3": "bbb", "1.3.4": "ccc"}
+        )
+        self.assertEqual(targets["1"], "ccc")
+        self.assertEqual(targets["1.3"], "ccc")
+        self.assertNotIn("1.3.4", targets)  # exact — must not appear
+
+    def test_single_patch_release_prefixed(self) -> None:
+        targets = compute_floating_tag_targets(
+            {"v1": "aaa", "v1.3": "bbb", "v1.3.4": "ccc"}
+        )
+        self.assertEqual(targets["v1"], "ccc")
+        self.assertEqual(targets["v1.3"], "ccc")
+
+    # ------------------------------------------------------------------
+    # Multiple patches — highest wins MAJOR.MINOR float
+    # ------------------------------------------------------------------
+
+    def test_highest_patch_wins_minor_float(self) -> None:
+        targets = compute_floating_tag_targets(
+            {
+                "1": "a",
+                "1.3": "b",
+                "1.3.0": "c00",
+                "1.3.1": "c01",
+                "1.3.5": "c05",
+            }
+        )
+        self.assertEqual(targets["1.3"], "c05")
+        self.assertEqual(targets["1"], "c05")
+
+    # ------------------------------------------------------------------
+    # Multiple minor lines — highest minor wins MAJOR float
+    # ------------------------------------------------------------------
+
+    def test_highest_minor_wins_major_float(self) -> None:
+        targets = compute_floating_tag_targets(
+            {
+                "1": "a",
+                "1.2": "b",
+                "1.2.3": "c23",
+                "1.3": "d",
+                "1.3.5": "c35",
+            }
+        )
+        self.assertEqual(targets["1"], "c35")   # 1.3.5 is the newest overall
+        self.assertEqual(targets["1.2"], "c23")  # highest patch in 1.2.x family
+        self.assertEqual(targets["1.3"], "c35")  # highest patch in 1.3.x family
+
+    # ------------------------------------------------------------------
+    # MAJOR.MINOR-only repo (no patch children → MAJOR.MINOR is exact)
+    # ------------------------------------------------------------------
+
+    def test_minor_only_repo_only_major_float_derived(self) -> None:
+        """With only MAJOR.MINOR exact tags, only MAJOR floating is needed."""
+        targets = compute_floating_tag_targets(
+            {"1": "a", "1.2": "b12", "1.3": "b13"}
+        )
+        self.assertEqual(targets["1"], "b13")   # minor=3 > minor=2
+        self.assertNotIn("1.2", targets)         # exact — no floating above it
+        self.assertNotIn("1.3", targets)         # exact — no floating above it
+
+    def test_minor_only_single_entry(self) -> None:
+        targets = compute_floating_tag_targets({"1": "a", "1.3": "b13"})
+        self.assertEqual(targets["1"], "b13")
+        self.assertNotIn("1.3", targets)
+
+    # ------------------------------------------------------------------
+    # Mixed transition: some MAJOR.MINOR exact, some MAJOR.MINOR.PATCH
+    # ------------------------------------------------------------------
+
+    def test_transition_patch_outranks_same_minor_exact(self) -> None:
+        """MAJOR.MINOR.PATCH sort key (minor, patch=N) beats MAJOR.MINOR sort key
+        (minor, patch=-1) only when the patch version is higher."""
+        targets = compute_floating_tag_targets(
+            {
+                "1": "a",
+                "1.2": "old",   # was exact; now floating (has 1.2.0 sibling)
+                "1.2.0": "new",
+                "1.3": "mid",   # still exact (no 1.3.x siblings)
+            }
+        )
+        # 1.3 exact: sort_key (3, -1); 1.2.0 exact: sort_key (2, 0)
+        # (3, -1) > (2, 0) → 1.3 wins → MAJOR float → "mid"
+        self.assertEqual(targets["1"], "mid")
+        # 1.2 is floating → points to 1.2.0's commit
+        self.assertEqual(targets["1.2"], "new")
+        # 1.3 is exact with no patch sibling → not a floating target
+        self.assertNotIn("1.3", targets)
+
+    def test_patch_beats_lower_minor_exact(self) -> None:
+        """A MAJOR.MINOR.PATCH version beats a MAJOR.MINOR exact of lower minor."""
+        targets = compute_floating_tag_targets(
+            {
+                "1": "a",
+                "1.2": "b12",   # exact (no patch sibling)
+                "1.1": "b11",   # exact (no patch sibling)
+                "1.3": "b13",   # exact (no patch sibling)
+            }
+        )
+        self.assertEqual(targets["1"], "b13")  # minor=3 is highest
+
+    # ------------------------------------------------------------------
+    # Multiple MAJOR families
+    # ------------------------------------------------------------------
+
+    def test_multiple_major_families(self) -> None:
+        targets = compute_floating_tag_targets(
+            {
+                "1": "a1", "1.2": "b12", "1.2.0": "c120",
+                "2": "a2", "2.0": "b20", "2.0.1": "c201",
+            }
+        )
+        self.assertEqual(targets["1"], "c120")
+        self.assertEqual(targets["1.2"], "c120")
+        self.assertEqual(targets["2"], "c201")
+        self.assertEqual(targets["2.0"], "c201")
+
+    # ------------------------------------------------------------------
+    # Cross-prefix isolation
+    # ------------------------------------------------------------------
+
+    def test_cross_prefix_isolation(self) -> None:
+        """Prefixed and unprefixed families are fully independent."""
+        targets = compute_floating_tag_targets(
+            {
+                "1": "a", "1.3": "b", "1.3.4": "c34",
+                "v1": "d", "v1.3": "e", "v1.3.5": "c35",
+            }
+        )
+        self.assertEqual(targets["1"], "c34")
+        self.assertEqual(targets["1.3"], "c34")
+        self.assertEqual(targets["v1"], "c35")
+        self.assertEqual(targets["v1.3"], "c35")
+
+    # ------------------------------------------------------------------
+    # Exact tags only (no pre-existing floating tags in inventory)
+    # ------------------------------------------------------------------
+
+    def test_derives_floats_even_without_existing_float_tags(self) -> None:
+        """Works correctly even if the inventory only has exact tags."""
+        targets = compute_floating_tag_targets({"1.3.4": "ccc"})
+        self.assertEqual(targets["1"], "ccc")
+        self.assertEqual(targets["1.3"], "ccc")
 
 
 if __name__ == "__main__":

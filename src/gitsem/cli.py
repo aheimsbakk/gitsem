@@ -122,6 +122,15 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--repair",
+        action="store_true",
+        help=(
+            "Reconcile all floating tags against the exact-tag inventory. "
+            "Creates missing floating tags and corrects mis-pointed ones. "
+            "Style is autodetected. Cannot be combined with a version, --migrate, or --force."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help=(
@@ -300,7 +309,20 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     try:
-        if args.version is None:
+        if args.repair:
+            # --repair path: reconcile floating tags from the exact-tag inventory.
+            if args.version is not None:
+                parser.error("--repair cannot be combined with a version argument")
+            if args.migrate:
+                parser.error("--repair cannot be combined with --migrate")
+            if args.force:
+                parser.error("--repair cannot be combined with --force")
+            result = tag_service.repair_floating(
+                push=args.push,
+                dry_run=args.dry_run,
+            )
+            version_str: str | None = None
+        elif args.version is None:
             # Versionless path — only valid with --push.
             if not args.push:
                 parser.error(

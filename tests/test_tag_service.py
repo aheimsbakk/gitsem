@@ -660,5 +660,268 @@ class TestSyncAll(unittest.TestCase):
         self.assertEqual(result.head_commit, "c" * 40)
 
 
+class TestRepairFloating(unittest.TestCase):
+    """repair_floating() creates/moves floating tags from the exact-tag inventory."""
+
+    def _ti(self, commit: str = "a" * 40, annotated: bool = False) -> TagInfo:
+        return TagInfo(commit=commit, annotated=annotated)
+
+    # ------------------------------------------------------------------
+    # Empty inventory → empty result, no error
+    # ------------------------------------------------------------------
+
+    @patch("gitsem.tag_service.git_ops.list_local_tags", return_value={})
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="a" * 40)
+    def test_empty_inventory_no_op(
+        self, mock_health: MagicMock, mock_local: MagicMock
+    ) -> None:
+        from gitsem.tag_service import repair_floating
+
+        result = repair_floating(push=False)
+        self.assertEqual(result.created, [])
+        self.assertEqual(result.moved, [])
+        self.assertEqual(result.skipped, [])
+
+    # ------------------------------------------------------------------
+    # Missing floating tags → created
+    # ------------------------------------------------------------------
+
+    @patch("gitsem.tag_service.git_ops.create_tag")
+    @patch("gitsem.tag_service.git_ops.list_local_tags")
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="a" * 40)
+    def test_creates_missing_floating_tags(
+        self,
+        mock_health: MagicMock,
+        mock_local: MagicMock,
+        mock_create: MagicMock,
+    ) -> None:
+        commit = "c" * 40
+        # Only the exact tag exists; floating tags are absent.
+        mock_local.return_value = {"1.3.4": self._ti(commit)}
+        from gitsem.tag_service import repair_floating
+
+        result = repair_floating(push=False)
+        self.assertIn("1", result.created)
+        self.assertIn("1.3", result.created)
+        self.assertEqual(mock_create.call_count, 2)
+
+    # ------------------------------------------------------------------
+    # Floating tags at wrong commit → moved
+    # ------------------------------------------------------------------
+
+    @patch("gitsem.tag_service.git_ops.create_tag")
+    @patch("gitsem.tag_service.git_ops.delete_local_tag")
+    @patch("gitsem.tag_service.git_ops.list_local_tags")
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="a" * 40)
+    def test_moves_floating_tags_to_correct_commit(
+        self,
+        mock_health: MagicMock,
+        mock_local: MagicMock,
+        mock_delete: MagicMock,
+        mock_create: MagicMock,
+    ) -> None:
+        old = "o" * 40
+        new = "n" * 40
+        mock_local.return_value = {
+            "1": self._ti(old),      # floating — wrong commit
+            "1.3": self._ti(old),    # floating — wrong commit
+            "1.3.4": self._ti(new),  # exact
+        }
+        from gitsem.tag_service import repair_floating
+
+        result = repair_floating(push=False)
+        self.assertIn("1", result.moved)
+        self.assertIn("1.3", result.moved)
+        self.assertEqual(mock_delete.call_count, 2)
+        self.assertEqual(mock_create.call_count, 2)
+
+    # ------------------------------------------------------------------
+    # Floating tags already correct → skipped
+    # ------------------------------------------------------------------
+
+    @patch("gitsem.tag_service.git_ops.list_local_tags")
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="a" * 40)
+    def test_skips_correct_floating_tags(
+        self,
+        mock_health: MagicMock,
+        mock_local: MagicMock,
+    ) -> None:
+        commit = "c" * 40
+        mock_local.return_value = {
+            "1": self._ti(commit),
+            "1.3": self._ti(commit),
+            "1.3.4": self._ti(commit),
+        }
+        from gitsem.tag_service import repair_floating
+
+        result = repair_floating(push=False)
+        self.assertIn("1", result.skipped)
+        self.assertIn("1.3", result.skipped)
+        self.assertEqual(result.moved, [])
+        self.assertEqual(result.created, [])
+
+    # ------------------------------------------------------------------
+    # Annotated floating tag → TagConflictError
+    # ------------------------------------------------------------------
+
+    @patch("gitsem.tag_service.git_ops.list_local_tags")
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="a" * 40)
+    def test_annotated_floating_tag_raises(
+        self,
+        mock_health: MagicMock,
+        mock_local: MagicMock,
+    ) -> None:
+        commit = "c" * 40
+        mock_local.return_value = {
+            "1": self._ti(commit, annotated=True),  # annotated floating
+            "1.3": self._ti(commit),
+            "1.3.4": self._ti(commit),
+        }
+        from gitsem.tag_service import repair_floating
+
+        with self.assertRaises(TagConflictError):
+            repair_floating(push=False)
+
+    # ------------------------------------------------------------------
+    # Mixed-style repo → TagConflictError (via detect_style)
+    # ------------------------------------------------------------------
+
+    @patch("gitsem.tag_service.git_ops.list_local_tags")
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="a" * 40)
+    def test_mixed_style_raises(
+        self,
+        mock_health: MagicMock,
+        mock_local: MagicMock,
+    ) -> None:
+        mock_local.return_value = {
+            "1.3.4": self._ti(),
+            "v1.3.5": self._ti(),
+        }
+        from gitsem.tag_service import repair_floating
+
+        with self.assertRaises(TagConflictError):
+            repair_floating(push=False)
+
+    # ------------------------------------------------------------------
+    # dry_run=True → no mutations, result populated
+    # ------------------------------------------------------------------
+
+    @patch("gitsem.tag_service.git_ops.create_tag")
+    @patch("gitsem.tag_service.git_ops.list_local_tags")
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="a" * 40)
+    def test_dry_run_no_mutations(
+        self,
+        mock_health: MagicMock,
+        mock_local: MagicMock,
+        mock_create: MagicMock,
+    ) -> None:
+        commit = "c" * 40
+        mock_local.return_value = {"1.3.4": self._ti(commit)}
+        from gitsem.tag_service import repair_floating
+
+        result = repair_floating(push=False, dry_run=True)
+        mock_create.assert_not_called()
+        self.assertIn("1", result.created)
+        self.assertIn("1.3", result.created)
+        self.assertTrue(result.dry_run)
+
+    # ------------------------------------------------------------------
+    # push=True → remote floating tags pushed
+    # ------------------------------------------------------------------
+
+    @patch("gitsem.tag_service.git_ops.push_tag")
+    @patch("gitsem.tag_service.git_ops.list_remote_tags", return_value={})
+    @patch("gitsem.tag_service.git_ops.create_tag")
+    @patch("gitsem.tag_service.git_ops.list_local_tags")
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="a" * 40)
+    def test_push_pushes_floating_tags(
+        self,
+        mock_health: MagicMock,
+        mock_local: MagicMock,
+        mock_create: MagicMock,
+        mock_remote: MagicMock,
+        mock_push: MagicMock,
+    ) -> None:
+        commit = "c" * 40
+        mock_local.return_value = {"1.3.4": self._ti(commit)}
+        from gitsem.tag_service import repair_floating
+
+        result = repair_floating(push=True)
+        self.assertIn("1", result.pushed)
+        self.assertIn("1.3", result.pushed)
+        self.assertEqual(mock_push.call_count, 2)
+
+    # ------------------------------------------------------------------
+    # push annotated remote tag → RemoteConflictError
+    # ------------------------------------------------------------------
+
+    @patch("gitsem.tag_service.git_ops.push_tag")
+    @patch("gitsem.tag_service.git_ops.list_remote_tags")
+    @patch("gitsem.tag_service.git_ops.create_tag")
+    @patch("gitsem.tag_service.git_ops.list_local_tags")
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="a" * 40)
+    def test_push_annotated_remote_raises(
+        self,
+        mock_health: MagicMock,
+        mock_local: MagicMock,
+        mock_create: MagicMock,
+        mock_remote: MagicMock,
+        mock_push: MagicMock,
+    ) -> None:
+        commit = "c" * 40
+        old = "o" * 40
+        mock_local.return_value = {"1.3.4": self._ti(commit)}
+        mock_remote.return_value = {
+            "1": TagInfo(commit=old, annotated=True),
+        }
+        from gitsem.tag_service import repair_floating
+
+        with self.assertRaises(RemoteConflictError):
+            repair_floating(push=True)
+
+    # ------------------------------------------------------------------
+    # head_commit is set in result
+    # ------------------------------------------------------------------
+
+    @patch("gitsem.tag_service.git_ops.list_local_tags", return_value={})
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="d" * 40)
+    def test_head_commit_set(
+        self,
+        mock_health: MagicMock,
+        mock_local: MagicMock,
+    ) -> None:
+        from gitsem.tag_service import repair_floating
+
+        result = repair_floating(push=False)
+        self.assertEqual(result.head_commit, "d" * 40)
+
+    # ------------------------------------------------------------------
+    # MAJOR.MINOR-only repo → only MAJOR float created
+    # ------------------------------------------------------------------
+
+    @patch("gitsem.tag_service.git_ops.create_tag")
+    @patch("gitsem.tag_service.git_ops.list_local_tags")
+    @patch("gitsem.tag_service.git_ops.health_check", return_value="a" * 40)
+    def test_minor_only_repo_creates_major_float_only(
+        self,
+        mock_health: MagicMock,
+        mock_local: MagicMock,
+        mock_create: MagicMock,
+    ) -> None:
+        c12, c13 = "1" * 40, "2" * 40
+        # 1.2 and 1.3 are both exact (no patch siblings); only '1' float is needed.
+        mock_local.return_value = {
+            "1.2": self._ti(c12),
+            "1.3": self._ti(c13),
+        }
+        from gitsem.tag_service import repair_floating
+
+        result = repair_floating(push=False)
+        self.assertEqual(result.created, ["1"])
+        self.assertEqual(mock_create.call_count, 1)
+        # Verify the MAJOR float is pointed at the highest minor's commit.
+        mock_create.assert_called_once_with("1", c13)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -92,6 +92,87 @@ def switch_tag_prefix(name: str, new_prefix: str) -> str:
     return new_prefix + bare
 
 
+def compute_floating_tag_targets(managed_tags: dict[str, str]) -> dict[str, str]:
+    """Compute the correct target commit for every floating tag that should exist.
+
+    Given the full managed tag inventory (*managed_tags*, mapping tag name →
+    commit hash), this function classifies every tag as exact or floating, then
+    derives — from the exact tags only — where each floating tag must point.
+
+    Rules:
+    - MAJOR floating tag: points to the commit of the highest-version exact tag
+      in that (prefix, MAJOR) family.  Sort key is (minor, patch) where
+      ``patch = -1`` for MAJOR.MINOR exact tags (no patch component).
+    - MAJOR.MINOR floating tag: points to the commit of the highest patch among
+      same-prefix MAJOR.MINOR.PATCH exact tags in that minor family.  A
+      MAJOR.MINOR tag that is itself exact (no patch children) does *not* spawn
+      a floating MAJOR.MINOR above itself — it *is* the exact.
+
+    Cross-prefix isolation is preserved: ``v1.3.4`` does not influence the
+    target of the unprefixed ``1`` floating tag, and vice versa.
+
+    Returns:
+        A dict mapping each floating tag name that *should* exist to the
+        commit it must point to.  An empty dict means nothing is needed
+        (e.g. the inventory is empty or has no exact tags).
+    """
+    if not managed_tags:
+        return {}
+
+    # Separate exact from floating using the full inventory for classification.
+    exact_tags: dict[str, str] = {
+        name: commit
+        for name, commit in managed_tags.items()
+        if classify_tag_role(name, managed_tags) == "exact"
+    }
+
+    # Parse exact tags into structured tuples for numeric comparison.
+    # Each entry: (prefix, major, minor, patch_or_None, commit)
+    parsed: list[tuple[str, int, int, int | None, str]] = []
+    for name, commit in exact_tags.items():
+        m = _TAG_DEPTH_RE.fullmatch(name)
+        if m is None:
+            continue
+        prefix = m.group(1)
+        major_s, minor_s, patch_s = m.group(2), m.group(3), m.group(4)
+        if minor_s is None:
+            continue  # MAJOR-only tags are always floating — never exact
+        major = int(major_s)
+        minor = int(minor_s)
+        patch = int(patch_s) if patch_s is not None else None
+        parsed.append((prefix, major, minor, patch, commit))
+
+    # MAJOR floating: highest (minor, patch) in each (prefix, major) family wins.
+    # MAJOR.MINOR exact tags use patch=-1 so they rank below any MAJOR.MINOR.PATCH
+    # of the same minor but above a lower minor entirely.
+    major_best: dict[tuple[str, int], tuple[tuple[int, int], str]] = {}
+    for prefix, major, minor, patch, commit in parsed:
+        key = (prefix, major)
+        sort_key = (minor, patch if patch is not None else -1)
+        if key not in major_best or sort_key > major_best[key][0]:
+            major_best[key] = (sort_key, commit)
+
+    # MAJOR.MINOR floating: highest patch in each (prefix, major, minor) family wins.
+    # Only MAJOR.MINOR.PATCH exact tags contribute — a MAJOR.MINOR exact tag is the
+    # exact itself and does not create a floating MAJOR.MINOR above it.
+    minor_best: dict[tuple[str, int, int], tuple[int, str]] = {}
+    for prefix, major, minor, patch, commit in parsed:
+        if patch is None:
+            continue
+        key = (prefix, major, minor)
+        if key not in minor_best or patch > minor_best[key][0]:
+            minor_best[key] = (patch, commit)
+
+    # Assemble result.
+    targets: dict[str, str] = {}
+    for (prefix, major), (_, commit) in major_best.items():
+        targets[f"{prefix}{major}"] = commit
+    for (prefix, major, minor), (_, commit) in minor_best.items():
+        targets[f"{prefix}{major}.{minor}"] = commit
+
+    return targets
+
+
 def classify_tag_role(name: str, all_managed: dict[str, object]) -> str:
     """Return 'exact' or 'floating' for a managed tag given the full inventory.
 

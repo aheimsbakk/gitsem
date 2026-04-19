@@ -252,6 +252,50 @@ def _execute_push(
 
 
 # ---------------------------------------------------------------------------
+# Repair helpers
+# ---------------------------------------------------------------------------
+
+
+def _execute_repair_push(
+    targets: dict[str, str],
+    result: ApplyResult,
+    remote: str = "origin",
+    *,
+    dry_run: bool = False,
+) -> None:
+    """Push floating tag corrections to *remote*.
+
+    All tags in *targets* are floating by definition and are moved freely —
+    no ``--force`` is required.  Annotated remote tags are always rejected.
+    In dry-run mode the remote is queried for conflict detection but no
+    pushes or deletes are performed.
+    """
+    remote_tags = git_ops.list_remote_tags(remote)
+
+    for tag, commit in sorted(targets.items()):
+        if tag in remote_tags:
+            remote_info = remote_tags[tag]
+            if remote_info.commit == commit:
+                result.remote_skipped.append(tag)
+                continue
+            if remote_info.annotated:
+                raise RemoteConflictError(
+                    f"Remote tag {tag!r} is an annotated tag pointing to a different "
+                    "commit. gitsem will not replace annotated remote tags.",
+                    hint="remove the annotated tag on the remote manually, then retry",
+                )
+            # Floating — delete-then-push without --force.
+            if not dry_run:
+                git_ops.delete_remote_tag(tag, remote)
+                git_ops.push_tag(tag, remote)
+            result.pushed.append(tag)
+        else:
+            if not dry_run:
+                git_ops.push_tag(tag, remote)
+            result.pushed.append(tag)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -411,5 +455,85 @@ def sync_all(
             if not dry_run:
                 git_ops.push_tag(tag, remote)
             result.pushed.append(tag)
+
+    return result
+
+
+def repair_floating(
+    *,
+    push: bool,
+    dry_run: bool = False,
+    remote: str = "origin",
+) -> ApplyResult:
+    """Reconcile floating tags against the full local exact-tag inventory.
+
+    For every MAJOR and MAJOR.MINOR floating tag that should exist (derived
+    from the existing exact tags), this function:
+    - creates the floating tag if it is missing locally
+    - moves the floating tag if it points to the wrong commit
+    - skips the floating tag if it already points to the correct commit
+
+    The tag style (prefixed vs unprefixed) is autodetected from the existing
+    managed tag inventory.  A mixed-style repository raises TagConflictError.
+    Only lightweight tags are managed; annotated tags are always rejected.
+
+    When *dry_run* is True all conflict checks run normally but no tags are
+    created, moved, or deleted, and no remote operations are performed.
+    *push* may still be combined with *dry_run* to inspect what remote
+    operations would be performed.
+
+    Returns:
+        ApplyResult describing every operation performed (or planned).
+
+    Raises:
+        Any subclass of GitsemError on failure.
+    """
+    result = ApplyResult(dry_run=dry_run)
+
+    # 1. Health check.
+    head_commit = git_ops.health_check()
+    result.head_commit = head_commit
+
+    # 2. Local inventory.
+    local_tags = git_ops.list_local_tags()
+    managed_tags = _get_managed_subset(local_tags)
+
+    if not managed_tags:
+        return result
+
+    # 3. Style detection — raises TagConflictError on mixed styles.
+    detect_style(managed_tags)
+
+    # 4. Compute the correct target commit for every floating tag.
+    name_to_commit = {name: info.commit for name, info in managed_tags.items()}
+    targets = versioning.compute_floating_tag_targets(name_to_commit)
+
+    if not targets:
+        return result
+
+    # 5. Pre-flight: reject any annotated floating tags before mutating.
+    for tag in targets:
+        if tag in managed_tags:
+            _assert_not_annotated(tag, managed_tags[tag], "")
+
+    # 6. Create or move each floating tag to its correct target commit.
+    for tag, commit in sorted(targets.items()):
+        if tag in managed_tags:
+            info = managed_tags[tag]
+            if info.commit == commit:
+                result.skipped.append(tag)
+            else:
+                if not dry_run:
+                    git_ops.delete_local_tag(tag)
+                    git_ops.create_tag(tag, commit)
+                result.moved.append(tag)
+        else:
+            if not dry_run:
+                git_ops.create_tag(tag, commit)
+            result.created.append(tag)
+
+    # 7. Optional remote synchronization of floating tags.
+    if push:
+        _execute_repair_push(targets, result, remote=remote, dry_run=dry_run)
 
     return result

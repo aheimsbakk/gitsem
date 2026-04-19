@@ -1,8 +1,9 @@
 # CONTEXT: gitsem
 
 ## Current project state
-- v0.3.0 — full implementation complete; 162 tests passing
-- `sync_all` / versionless `--push` feature implemented (pending wrap-up to v0.4.0)
+- v0.5.0 — full implementation complete; 201 tests passing
+- `--repair` floating-tag reconciliation feature implemented
+- `sync_all` / versionless `--push` feature implemented
 - Source under `src/gitsem/`, tests under `tests/`
 - Runnable via `uvx --from git+https://github.com/aheimsbakk/gitsem gitsem`
 
@@ -45,6 +46,7 @@
 ## CLI surface (implemented)
 - `gitsem [--push] [--force] [--migrate] [--dry-run] [-q/--quiet] [--porcelain] [-v/--verbose] <version>`
 - `gitsem --push [--force] [--dry-run] [-q/--quiet] [--porcelain]`  ← versionless sync-all
+- `gitsem --repair [--push] [--dry-run] [-q/--quiet] [--porcelain] [-v/--verbose]`  ← floating-tag reconciliation
 - `-h/--help`, `-V/--version`
 
 ## Output modes
@@ -81,6 +83,14 @@
 - `ApplyResult.dry_run = True`; `head_commit` is always populated
 - Human output uses "would create / move / migrate / remove / push" verbs
 - Summary appends `(dry run)` and uses "would be created / moved / migrated / pushed"
+
+## --repair semantics (implemented)
+- `compute_floating_tag_targets(managed_tags)` in `versioning.py` derives the correct target commit for every floating tag from the existing exact-tag inventory (pure function, no side effects)
+- MAJOR floating: winner = highest `(minor, patch)` within a `(prefix, major)` group; bare `MAJOR.MINOR` exact tags contribute only to their own MAJOR float
+- MAJOR.MINOR floating: only `MAJOR.MINOR.PATCH` exact tags spawn a MAJOR.MINOR float above themselves; a MAJOR.MINOR exact tag does not float above itself
+- Cross-prefix isolation: `v1.3.4` does not influence the unprefixed `1` float
+- `repair_floating()` in `tag_service.py` orchestrates: health check → style detection → compute targets → create/move/skip → optional push (floating only, no `--force`)
+- `--repair` is mutually exclusive with `<version>`, `--migrate`, and `--force`; compatible with `--push`, `--dry-run`, `-q`, `--porcelain`, `-v`
 
 ## Architectural direction
 - Keep CLI parsing, semantic-version parsing, Git command execution, and tag orchestration in separate modules
