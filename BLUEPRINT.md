@@ -1,5 +1,7 @@
 # BLUEPRINT: gitsem
 
+**Current version:** 0.5.0 — full implementation complete; 201 tests passing.
+
 ## 1. Product definition
 gitsem is a Python command-line application for applying Docker-like floating semantic-version tags to a Git repository. A single release command aligns either two or three tags on the same commit depending on the repository's versioning style.
 
@@ -10,6 +12,8 @@ Examples:
 - `gitsem --push 1.3.4`
 - `gitsem --migrate v1.3.4`
 - `gitsem --push --force 1.3.4`
+- `gitsem --push` (sync all local managed tags to origin)
+- `gitsem --repair` (reconcile all floating tags from exact-tag inventory)
 
 The command must preserve the caller's prefix style. If the requested version is `v1.3.4`, managed tags are `v1`, `v1.3`, and `v1.3.4`. If the requested version is `1.3.4`, managed tags are `1`, `1.3`, and `1.3.4`.
 
@@ -21,6 +25,8 @@ Make Git tags behave like Docker-style moving channels while preserving the repo
 - for `MAJOR.MINOR` repositories, `MAJOR` always points to the newest released `MAJOR.x`, and `MAJOR.MINOR` points to the exact release commit
 
 Repositories may evolve from `MAJOR.MINOR` releases to `MAJOR.MINOR.PATCH` releases over time. That transition is allowed.
+
+Historical `MAJOR.MINOR` exact tags may later become floating tags once patch releases begin for that minor line.
 
 ## 3. Functional scope
 The first implementation must:
@@ -194,31 +200,35 @@ Module responsibilities:
 - `errors.py`: typed domain errors for predictable handling
 
 Implementation guidance:
-- use the Python standard library first
-- execute Git through `subprocess.run(..., check=False, shell=False)`
-- pass explicit argument lists only
-- apply timeouts to Git subprocess calls
+- use the Python standard library only (no external dependencies)
+- execute Git through `subprocess.run(..., check=False, shell=False)` with explicit argument lists
+- apply timeouts to Git subprocess calls (30s local, 60s remote)
 - keep Git command execution separate from version and policy logic
 - model repository health checks explicitly before mutating tags
 - classify managed version tags separately from unrelated tags
+- use lightweight Git tags only (reject annotated tags)
 
 ## 8. Packaging and execution
 The finished tool must be runnable with `uvx`, so the package should expose a console script named `gitsem`. The repository should be prepared for standard Python packaging with metadata and an entry point that resolves to the CLI main function.
 
 ## 9. Testing strategy
-Tests must use `unittest` and cover both logic and real Git behavior.
+Tests use `unittest` and cover both logic and real Git behavior.
+
+Current state: 201 tests passing across 4 test files.
 
 Unit tests:
-- semantic-version validation for `MAJOR.MINOR` and `MAJOR.MINOR.PATCH`
-- prefixed and unprefixed tag derivation
-- derived tag set generation
-- error mapping and CLI argument handling
-- style detection and mismatch handling
-- release-depth transition behavior from `MAJOR.MINOR` to `MAJOR.MINOR.PATCH`
-- switch planning for prefixed and unprefixed repositories
-- exit code mapping
+- semantic-version validation for `MAJOR.MINOR` and `MAJOR.MINOR.PATCH` (`test_versioning.py`)
+- prefixed and unprefixed tag derivation (`test_versioning.py`)
+- derived tag set generation (`test_versioning.py`)
+- error mapping and CLI argument handling (`test_cli.py`)
+- style detection and mismatch handling (`test_tag_service.py`)
+- release-depth transition behavior from `MAJOR.MINOR` to `MAJOR.MINOR.PATCH` (`test_tag_service.py`)
+- switch planning for prefixed and unprefixed repositories (`test_tag_service.py`)
+- exit code mapping (`test_cli.py`)
+- dry-run semantics for apply, sync_all, and repair (`test_tag_service.py`)
+- porcelain, quiet, verbose output modes (`test_cli.py`)
 
-Integration tests:
+Integration tests (`test_integration.py`):
 - create tags in a temporary local repository
 - move existing floating tags to a newer commit
 - confirm idempotent behavior when tags already match `HEAD`
@@ -227,8 +237,8 @@ Integration tests:
 - handle repositories that release only `MAJOR.MINOR` versions
 - allow repositories to start with `MAJOR.MINOR` releases and later use `MAJOR.MINOR.PATCH`
 - repurpose historical `MAJOR.MINOR` exact tags into floating tags when patch releases begin
-  - reject style mismatch unless `--migrate` is used
-  - migrate managed tags when `--migrate` is used
+- reject style mismatch unless `--migrate` is used
+- migrate managed tags when `--migrate` is used
 - synchronize against a temporary bare remote with `--push`
 - keep `--push` idempotent when remote state already matches
 - reject conflicting remote exact tags unless `--force` is used
@@ -236,6 +246,11 @@ Integration tests:
 - fail cleanly on missing or inaccessible `origin`
 - reject existing managed annotated tags locally and remotely
 - verify local and remote refs match expected commit hashes after each scenario
+- `--repair` floating-tag reconciliation (creates missing, moves stale, skips correct)
+- `--repair --push` remote synchronization of floating tags
+- `--dry-run` validation without mutations
+- `--porcelain` machine-readable output
+- `--push` (versionless sync_all) full synchronization
 
 ## 10. Repository health requirements
 The tool must only mutate tags when the repository is healthy enough for deterministic operation.
@@ -257,3 +272,7 @@ The first version does not include:
 - GitHub release automation
 - CI/CD configuration
 - automatic interpretation of ambiguous non-release tag collisions
+
+## 12. Open decisions for later implementation
+- configurable remote beyond `origin`
+- better handling of ambiguous non-release tag name collisions

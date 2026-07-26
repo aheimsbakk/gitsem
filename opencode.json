@@ -1,8 +1,19 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "share": "disabled",
   "instructions": [
-    ".opencode/RULES.md"
+    ".opencode/RULES.md",
+    "AGENTS.md"
   ],
-  "small_model": "github-copilot/gpt-5-mini"
+  // "mcp": {
+  //  "playwright": {
+  //    "type": "local",
+  //    "command": ["npx", "-y", "@playwright/mcp@latest", "--browser", "chromium"],
+  //    "enabled": false
+  //  }
+  //},
+  "autoupdate": false,
+  "formatter": true,
+  "lsp": true,
+  "share": "manual",
+  "snapshot": true
 }
